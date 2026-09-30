@@ -4,7 +4,16 @@ USER root
 WORKDIR /app
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    xvfb libxi6 libxtst6 libxrender1 libxrandr2 libx11-6 libgl1-mesa-glx ca-certificates \
+    xvfb \
+    libxi6 \
+    libxtst6 \
+    libxrender1 \
+    libxrandr2 \
+    libx11-6 \
+    libgl1 \
+    libglx-mesa0 \
+    libgl1-mesa-dri \
+    ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 # GitHub-mobile-friendly flat layout: reconstruct the normal Fabric project here.
