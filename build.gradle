@@ -1,0 +1,87 @@
+plugins {
+    id 'net.fabricmc.fabric-loom-remap' version loom_version
+    id 'java'
+}
+
+import groovy.json.JsonSlurper
+
+version = project.mod_version
+group = project.maven_group
+
+base {
+    archivesName = 'chunky-bot'
+}
+
+repositories {
+    mavenCentral()
+    maven { url = 'https://maven.fabricmc.net/' }
+}
+
+dependencies {
+    minecraft "com.mojang:minecraft:${project.minecraft_version}"
+    mappings "net.fabricmc:yarn:${project.yarn_mappings}:v2"
+    modImplementation "net.fabricmc:fabric-loader:${project.loader_version}"
+    modImplementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_version}"
+}
+
+loom {
+    splitEnvironmentSourceSets()
+    mods {
+        'chunky_bot' {
+            sourceSet sourceSets.main
+        }
+    }
+    runs {
+        client {
+            client()
+            name = 'Chunky Bot Client'
+            runDir = 'run'
+            property 'fabric.development', 'true'
+            property 'fabric.log.level', 'info'
+        }
+    }
+}
+
+processResources {
+    from(project.file('bot-settings.json')) {
+        into ''
+        rename { 'bot-settings.json' }
+    }
+    inputs.property 'version', project.version
+    filesMatching('fabric.mod.json') {
+        expand 'version': project.version
+    }
+}
+
+tasks.register('prepareBotMods', Copy) {
+    from layout.projectDirectory.dir('mods')
+    into layout.projectDirectory.dir('run/mods')
+    include '*.jar'
+    onlyIf { file('mods').exists() }
+}
+
+tasks.named('runClient') {
+    dependsOn tasks.named('prepareBotMods')
+    doFirst {
+        def cfg = new JsonSlurper().parse(file('bot-settings.json'))
+        def username = cfg.account.username.toString()
+        if (username.length() > 16 || username.isEmpty()) throw new GradleException('Invalid account.username')
+        def offlineUuid = UUID.nameUUIDFromBytes(('OfflinePlayer:' + username).getBytes('UTF-8')).toString()
+        args '--username', username
+        args '--uuid', offlineUuid
+        args '--accessToken', '0'
+        args '--userType', 'legacy'
+    }
+}
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(21)
+    }
+    withSourcesJar()
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.release = 21
+    options.encoding = 'UTF-8'
+}

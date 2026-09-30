@@ -1,0 +1,40 @@
+{
+  "server": {
+    "address": "YOUR-ATERNNOS-ADDRESS",
+    "port": 25565,
+    "minecraft_version": "1.21.11"
+  },
+  "account": {
+    "username": "ChunkyBot"
+  },
+  "bot": {
+    "auto_reconnect": true,
+    "reconnect_delay_seconds": 10,
+    "connect_delay_seconds": 3,
+    "movement": {
+      "enabled": true,
+      "patrol_radius": 20.0,
+      "sprint": true,
+      "jump_over_obstacles": true,
+      "random_strafe": true,
+      "random_look": true,
+      "patrol_min_seconds": 4,
+      "patrol_max_seconds": 9,
+      "idle_min_seconds": 2,
+      "idle_max_seconds": 5
+    },
+    "mob_avoidance": {
+      "enabled": true,
+      "detection_radius": 16.0,
+      "flee_radius": 11.0,
+      "emergency_radius": 6.0
+    },
+    "block_placing": {
+      "enabled": true,
+      "hotbar_slot": 1,
+      "interval_seconds": 12,
+      "place_ahead": true,
+      "only_if_block_in_slot": true
+    }
+  }
+}
