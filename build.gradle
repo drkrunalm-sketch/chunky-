@@ -1,5 +1,5 @@
 plugins {
-    id 'net.fabricmc.fabric-loom-remap' version '1.16-SNAPSHOT'
+    id 'net.fabricmc.fabric-loom-remap' version "${loom_version}"
     id 'java'
 }
 
@@ -13,9 +13,6 @@ base {
 }
 
 repositories {
-    mavenCentral()
-    maven { url = 'https://maven.fabricmc.net/' }
-    maven { url = 'https://libraries.minecraft.net/' }
 }
 
 dependencies {
