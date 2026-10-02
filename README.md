@@ -31,3 +31,7 @@ Edit `bot-settings.json` in GitHub:
 The server must use `online-mode=false`.
 
 No Microsoft authentication is used.
+
+
+
+This is ai generated. I can find the mod authors if u search the mod names in modrinth. this project is for myself. I’ve kept it public so it will be easier to get running in render
