@@ -34,7 +34,6 @@ dependencies {
 }
 
 loom {
-    splitEnvironmentSourceSets()
     mods {
         'chunky_bot' {
             sourceSet sourceSets.main
