@@ -33,4 +33,8 @@ RUN mkdir -p src/main/java/com/shaurya/chunkybot src/main/resources mods \
 
 RUN gradle wrapper --gradle-version 9.5.1
 
-RUN ./gradlew --no-daemon build --refresh-dependencies --stacktrace --info
+RUN ./gradlew --no-daemon build --refresh-dependencies --console=plain 2>&1 | tee /tmp/gradle.log; \
+    status=${PIPESTATUS[0]}; \
+    echo "===== LAST 100 LINES ====="; \
+    tail -n 100 /tmp/gradle.log; \
+    exit $status
