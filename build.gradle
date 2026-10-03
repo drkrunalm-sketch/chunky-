@@ -26,10 +26,10 @@ repositories {
 }
 
 dependencies {
-    minecraft "com.mojang:minecraft:${project.minecraft_version}"
-    mappings "net.fabricmc:yarn:${project.yarn_mappings}:v2"
-    modImplementation "net.fabricmc:fabric-loader:${project.loader_version}"
-    modImplementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_version}"
+    minecraft "com.mojang:minecraft:${project.findProperty('minecraft_version') ?: '1.21.11'}"
+    mappings "net.fabricmc:yarn:${project.findProperty('yarn_mappings') ?: '1.21.11+build.6'}:v2"
+    modImplementation "net.fabricmc:fabric-loader:${project.findProperty('loader_version') ?: '0.19.3'}"
+    modImplementation "net.fabricmc.fabric-api:fabric-api:${project.findProperty('fabric_version') ?: '0.141.4+1.21.11'}"
 }
 
 loom {
