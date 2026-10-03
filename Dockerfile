@@ -19,6 +19,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # GitHub-mobile-friendly flat layout: reconstruct the normal Fabric project here.
 COPY . .
 
+COPY . .
+
+RUN test -f gradle.properties \
+    && echo "=== gradle.properties FOUND ===" \
+    && cat gradle.properties
+
 RUN mkdir -p src/main/java/com/shaurya/chunkybot src/main/resources mods \
     && cp ChunkyBotClient.java src/main/java/com/shaurya/chunkybot/ChunkyBotClient.java \
     && cp fabric.mod.json src/main/resources/fabric.mod.json \
@@ -28,9 +34,3 @@ RUN mkdir -p src/main/java/com/shaurya/chunkybot src/main/resources mods \
 RUN gradle wrapper --gradle-version 9.5.1
 
 RUN ./gradlew --no-daemon build --refresh-dependencies --stacktrace --info
-
-ENV JAVA_TOOL_OPTIONS="-Xmx1800M -Xms512M"
-
-RUN mkdir -p /app/run
-
-CMD ["bash", "railway-start.sh"]
