@@ -25,7 +25,9 @@ RUN mkdir -p src/main/java/com/shaurya/chunkybot src/main/resources mods \
     && find /app -maxdepth 1 -type f -name '*.jar' -exec cp {} /app/mods/ \; \
     && chmod +x railway-start.sh
 
-RUN gradle --no-daemon build --refresh-dependencies --stacktrace --info
+RUN gradle wrapper --gradle-version 9.5.1
+
+RUN ./gradlew --no-daemon build --refresh-dependencies --stacktrace --info
 
 ENV JAVA_TOOL_OPTIONS="-Xmx1800M -Xms512M"
 
