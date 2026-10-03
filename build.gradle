@@ -5,9 +5,8 @@ plugins {
 
 import groovy.json.JsonSlurper
 
-version = project.mod_version
-group = project.maven_group
-
+version = project.findProperty('mod_version') ?: '1.0.0'
+group = project.findProperty('maven_group') ?: 'com.shaurya.chunkybot'
 base {
     archivesName = 'chunky-bot'
 }
