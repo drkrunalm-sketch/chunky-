@@ -16,9 +16,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# GitHub-mobile-friendly flat layout: reconstruct the normal Fabric project here.
-COPY . .
-
 COPY . .
 
 RUN test -f gradle.properties \
@@ -33,8 +30,14 @@ RUN mkdir -p src/main/java/com/shaurya/chunkybot src/main/resources mods \
 
 RUN gradle wrapper --gradle-version 9.5.1
 
-RUN ./gradlew --no-daemon build --refresh-dependencies --console=plain 2>&1 | tee /tmp/gradle.log; \
+RUN bash -c './gradlew --no-daemon build --refresh-dependencies --console=plain 2>&1 | tee /tmp/gradle.log; \
     status=${PIPESTATUS[0]}; \
     echo "===== LAST 100 LINES ====="; \
     tail -n 100 /tmp/gradle.log; \
-    exit $status
+    exit $status'
+
+ENV JAVA_TOOL_OPTIONS="-Xmx1800M -Xms512M"
+
+RUN mkdir -p /app/run
+
+CMD ["bash", "railway-start.sh"]
