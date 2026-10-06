@@ -10,7 +10,7 @@ PORT=”${PORT:-10000}”
 
 echo “Starting Render health server on port ${PORT}…”
 
-python3 - <<‘PY’ &
+python3 -c ’
 import os
 import socket
 
@@ -21,7 +21,7 @@ server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 server.bind((“0.0.0.0”, port))
 server.listen(20)
 
-print(f”[Health] Listening on 0.0.0.0:{port}”, flush=True)
+print(”[Health] Listening on 0.0.0.0:” + str(port), flush=True)
 
 while True:
 conn, addr = server.accept()
@@ -32,7 +32,7 @@ try:
     response = (
         b"HTTP/1.1 200 OK\r\n"
         b"Content-Type: text/plain\r\n"
-        + f"Content-Length: {len(body)}\r\n".encode()
+        + ("Content-Length: " + str(len(body)) + "\r\n").encode()
         + b"Connection: close\r\n"
         + b"\r\n"
         + body
@@ -43,7 +43,7 @@ except Exception:
 finally:
     conn.close()
 
-PY
+’ &
 
 echo “Starting virtual display…”
 
