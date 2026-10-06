@@ -2,15 +2,15 @@
 
 set -e
 
-echo “=== Fabric 1.21.11 Offline Chunky Bot ===”
-echo “No Microsoft authentication is used.”
-echo “Server, username, movement and block-placement settings come from bot-settings.json.”
+echo "=== Fabric 1.21.11 Offline Chunky Bot ==="
+echo "No Microsoft authentication is used."
+echo "Server, username, movement and block-placement settings come from bot-settings.json.”
 
-PORT=”${PORT:-10000}”
+PORT="${PORT:-10000}"
 
-echo “Starting Render health server on port ${PORT}…”
+echo "Starting Render health server on port ${PORT}…"
 
-python3 -c ’
+python3 -c '
 import os
 import socket
 
@@ -45,7 +45,7 @@ finally:
 
 ’ &
 
-echo “Starting virtual display…”
+echo "Starting virtual display…"
 
 export DISPLAY=:99
 
@@ -59,7 +59,7 @@ Xvfb :99
 
 sleep 2
 
-echo “Starting Minecraft client…”
+echo "Starting Minecraft client…"
 
 exec ./gradlew 
 –no-daemon 
