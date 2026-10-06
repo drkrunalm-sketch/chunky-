@@ -954,7 +954,287 @@ public class ChunkyBotClient implements ClientModInitializer {
     // MOVEMENT CLEANUP
     // ============================================================
 
-    private static void clearMovementKeys() {
+        private static void clearMovementKeys() {
 
         if (client == null) {
             return;
+        }
+
+        client.options.forwardKey.setPressed(false);
+        client.options.backKey.setPressed(false);
+        client.options.leftKey.setPressed(false);
+        client.options.rightKey.setPressed(false);
+        client.options.jumpKey.setPressed(false);
+        client.options.sprintKey.setPressed(false);
+
+        moving = false;
+        strafing = false;
+        sprinting = false;
+        jumping = false;
+    }
+
+    // ============================================================
+    // RANDOM TIMERS
+    // ============================================================
+
+    private static long randomMovementDuration() {
+
+        int min =
+                Math.max(
+                        1,
+                        settings.bot.movement
+                                .patrol_min_seconds
+                );
+
+        int max =
+                Math.max(
+                        min,
+                        settings.bot.movement
+                                .patrol_max_seconds
+                );
+
+        int seconds =
+                min + RANDOM.nextInt(max - min + 1);
+
+        return seconds * 1000L;
+    }
+
+    private static long randomIdleDuration() {
+
+        int min =
+                Math.max(
+                        1,
+                        settings.bot.movement
+                                .idle_min_seconds
+                );
+
+        int max =
+                Math.max(
+                        min,
+                        settings.bot.movement
+                                .idle_max_seconds
+                );
+
+        int seconds =
+                min + RANDOM.nextInt(max - min + 1);
+
+        return seconds * 1000L;
+    }
+
+    // ============================================================
+    // RENDER HEALTH SERVER
+    // ============================================================
+
+    private static void startRenderHealthServer() {
+
+        if (healthThread != null
+                && healthThread.isAlive()) {
+            return;
+        }
+
+        healthThread = new Thread(
+                () -> {
+
+                    String portString =
+                            System.getenv("PORT");
+
+                    int port = 10000;
+
+                    if (portString != null) {
+                        try {
+                            port = Integer.parseInt(portString);
+                        } catch (NumberFormatException ignored) {
+                            System.out.println(
+                                    "[ChunkyBot] Invalid PORT; using 10000."
+                            );
+                        }
+                    }
+
+                    try (ServerSocket serverSocket =
+                                 new ServerSocket()) {
+
+                        serverSocket.setReuseAddress(true);
+
+                        serverSocket.bind(
+                                new InetSocketAddress(
+                                        "0.0.0.0",
+                                        port
+                                )
+                        );
+
+                        System.out.println(
+                                "[ChunkyBot] Render health server listening on port "
+                                        + port
+                        );
+
+                        while (true) {
+
+                            try (Socket socket =
+                                         serverSocket.accept()) {
+
+                                handleHealthRequest(socket);
+
+                            } catch (Exception e) {
+
+                                System.err.println(
+                                        "[ChunkyBot] Health request error:"
+                                );
+
+                                e.printStackTrace();
+                            }
+                        }
+
+                    } catch (Exception e) {
+
+                        System.err.println(
+                                "[ChunkyBot] Failed to start Render health server:"
+                        );
+
+                        e.printStackTrace();
+                    }
+
+                },
+                "Render-Health-Server"
+        );
+
+        healthThread.setDaemon(true);
+        healthThread.start();
+    }
+
+    private static void handleHealthRequest(Socket socket) {
+
+        try {
+
+            socket.setSoTimeout(2000);
+
+            InputStream input =
+                    socket.getInputStream();
+
+            byte[] buffer = new byte[1024];
+
+            input.read(buffer);
+
+            String body =
+                    "ChunkyBot is running\n";
+
+            byte[] bodyBytes =
+                    body.getBytes(StandardCharsets.UTF_8);
+
+            OutputStream output =
+                    socket.getOutputStream();
+
+            String response =
+                    "HTTP/1.1 200 OK\r\n"
+                            + "Content-Type: text/plain\r\n"
+                            + "Content-Length: "
+                            + bodyBytes.length
+                            + "\r\n"
+                            + "Connection: close\r\n"
+                            + "\r\n";
+
+            output.write(
+                    response.getBytes(StandardCharsets.UTF_8)
+            );
+
+            output.write(bodyBytes);
+            output.flush();
+
+        } catch (Exception ignored) {
+        }
+    }
+
+    // ============================================================
+    // CONFIGURATION CLASSES
+    // ============================================================
+
+    public static class BotSettings {
+
+        public Server server = new Server();
+        public Account account = new Account();
+        public Bot bot = new Bot();
+    }
+
+    public static class Server {
+
+        public String address = "localhost";
+
+        public int port = 25565;
+
+        public String minecraft_version = "1.21.11";
+
+        public boolean auto_reconnect = true;
+
+        public int reconnect_delay_seconds = 10;
+
+        public int connect_delay_seconds = 3;
+    }
+
+    public static class Account {
+
+        public String username = "ChunkyBot";
+    }
+
+    public static class Bot {
+
+        public boolean auto_reconnect = true;
+
+        public int reconnect_delay_seconds = 10;
+
+        public int connect_delay_seconds = 3;
+
+        public Movement movement = new Movement();
+
+        public MobAvoidance mob_avoidance =
+                new MobAvoidance();
+
+        public BlockPlacing block_placing =
+                new BlockPlacing();
+    }
+
+    public static class Movement {
+
+        public boolean enabled = true;
+
+        public double patrol_radius = 20.0;
+
+        public boolean sprint = true;
+
+        public boolean jump_over_obstacles = true;
+
+        public boolean random_strafe = true;
+
+        public boolean random_look = true;
+
+        public int patrol_min_seconds = 6;
+
+        public int patrol_max_seconds = 10;
+
+        public int idle_min_seconds = 2;
+
+        public int idle_max_seconds = 5;
+    }
+
+    public static class MobAvoidance {
+
+        public boolean enabled = true;
+
+        public double detection_radius = 16.0;
+
+        public double flee_radius = 11.0;
+
+        public double emergency_radius = 6.0;
+    }
+
+    public static class BlockPlacing {
+
+        public boolean enabled = false;
+
+        public int hotbar_slot = 0;
+
+        public int interval_seconds = 10;
+
+        public int place_ahead = 1;
+
+        public boolean only_if_block_in_slot = true;
+    }
+}
