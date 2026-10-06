@@ -2,175 +2,354 @@ package com.shaurya.chunkybot;
 
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
+
 import net.fabricmc.api.ClientModInitializer;
+import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
+
+import net.minecraft.block.Block;
 import net.minecraft.block.BlockState;
 import net.minecraft.client.MinecraftClient;
+import net.minecraft.client.network.ClientPlayerEntity;
 import net.minecraft.client.network.ServerAddress;
 import net.minecraft.client.network.ServerInfo;
 import net.minecraft.client.gui.screen.ConnectScreen;
+
+import net.minecraft.entity.Entity;
 import net.minecraft.entity.mob.HostileEntity;
+
 import net.minecraft.item.BlockItem;
 import net.minecraft.item.ItemStack;
+import net.minecraft.item.Items;
+
 import net.minecraft.util.Hand;
 import net.minecraft.util.hit.BlockHitResult;
 import net.minecraft.util.math.BlockPos;
-import net.minecraft.util.math.Box;
 import net.minecraft.util.math.Direction;
 import net.minecraft.util.math.Vec3d;
 
-import java.io.BufferedReader;
-import java.io.InputStreamReader;
+import java.io.IOException;
+import java.io.InputStream;
 import java.io.OutputStream;
+import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
+import java.util.List;
 import java.util.Random;
 
 public class ChunkyBotClient implements ClientModInitializer {
 
     private static final MinecraftClient client = MinecraftClient.getInstance();
+
+    private static final Gson GSON = new GsonBuilder()
+            .setPrettyPrinting()
+            .create();
+
+    private static BotSettings settings;
+
     private static final Random RANDOM = new Random();
 
-    private static Settings settings;
-
+    private static long lastReconnectAttempt = 0;
     private static long connectedAt = 0;
     private static long nextMovementChange = 0;
     private static long nextIdleChange = 0;
     private static long nextBlockPlace = 0;
     private static long lastMobScan = 0;
-    private static long lastReconnectAttempt = 0;
 
     private static boolean moving = false;
     private static boolean strafing = false;
+    private static boolean sprinting = false;
+    private static boolean jumping = false;
     private static boolean idling = false;
-    private static boolean fleeing = false;
 
     private static float movementYaw = 0.0f;
-    private static float currentStrafe = 0.0f;
 
-    private static Vec3d patrolOrigin = null;
     private static HostileEntity nearestHostile = null;
+
+    private static Thread healthThread;
 
     @Override
     public void onInitializeClient() {
 
-        System.out.println("========================================");
-        System.out.println(" Fabric 1.21.11 Offline Chunky Bot");
-        System.out.println("========================================");
-        System.out.println("No Microsoft authentication is used.");
+        loadSettings();
 
-        settings = loadSettings();
-
-        if (settings == null) {
-            System.err.println("[Bot] Could not load bot-settings.json.");
-            return;
-        }
-
-        System.out.println("[Bot] Server: "
-                + settings.server.address + ":"
-                + settings.server.port);
-
-        System.out.println("[Bot] Username: "
-                + settings.account.username);
-
-        /*
-         * Render requires an HTTP port for Web Services.
-         * This server does NOT control the Minecraft bot.
-         * It only answers Render health checks.
-         */
         startRenderHealthServer();
 
         /*
-         * Keep the actual Minecraft startup on the client thread.
+         * This is important:
+         * it makes the bot's tick() method actually run.
          */
-        client.execute(() -> {
-            connectToServer();
-        });
+        ClientTickEvents.END_CLIENT_TICK.register(client -> tick());
+
+        System.out.println("[ChunkyBot] Client initialized.");
+
+        System.out.println(
+                "[ChunkyBot] Target server: "
+                        + settings.server.address
+                        + ":"
+                        + settings.server.port
+        );
+
+        System.out.println(
+                "[ChunkyBot] Username: "
+                        + settings.account.username
+        );
+
+        connectToServer();
     }
 
     // ============================================================
     // SETTINGS
     // ============================================================
 
-    private static Settings loadSettings() {
+    private static void loadSettings() {
 
         try {
 
-            var stream = ChunkyBotClient.class
+            InputStream input = ChunkyBotClient.class
                     .getClassLoader()
                     .getResourceAsStream("bot-settings.json");
 
-            if (stream == null) {
-                System.err.println("[Bot] bot-settings.json not found.");
-                return null;
+            if (input == null) {
+                throw new IOException(
+                        "bot-settings.json was not found in the built mod."
+                );
             }
 
-            try (BufferedReader reader =
-                         new BufferedReader(
-                                 new InputStreamReader(
-                                         stream,
-                                         StandardCharsets.UTF_8))) {
+            String json = new String(
+                    input.readAllBytes(),
+                    StandardCharsets.UTF_8
+            );
 
-                Gson gson = new GsonBuilder().create();
+            input.close();
 
-                return gson.fromJson(reader, Settings.class);
+            settings = GSON.fromJson(json, BotSettings.class);
+
+            if (settings == null) {
+                throw new IOException(
+                        "bot-settings.json produced a null configuration."
+                );
             }
+
+            validateSettings();
+
+            System.out.println("[ChunkyBot] Settings loaded successfully.");
 
         } catch (Exception e) {
 
             System.err.println(
-                    "[Bot] Failed to load settings: "
-                            + e.getMessage()
+                    "[ChunkyBot] Failed to load bot-settings.json:"
             );
 
             e.printStackTrace();
 
-            return null;
+            /*
+             * Keep the process alive so Render can still see the
+             * health server and provide useful logs.
+             */
+            settings = new BotSettings();
+        }
+    }
+
+    private static void validateSettings() {
+
+        if (settings.server == null) {
+            throw new IllegalArgumentException(
+                    "Missing server settings."
+            );
+        }
+
+        if (settings.account == null) {
+            throw new IllegalArgumentException(
+                    "Missing account settings."
+            );
+        }
+
+        if (settings.server.address == null
+                || settings.server.address.isBlank()) {
+
+            throw new IllegalArgumentException(
+                    "server.address is empty."
+            );
+        }
+
+        if (settings.server.port < 1
+                || settings.server.port > 65535) {
+
+            throw new IllegalArgumentException(
+                    "server.port must be between 1 and 65535."
+            );
+        }
+
+        if (settings.account.username == null
+                || settings.account.username.isBlank()) {
+
+            throw new IllegalArgumentException(
+                    "account.username is empty."
+            );
+        }
+
+        if (settings.account.username.length() > 16) {
+
+            throw new IllegalArgumentException(
+                    "Minecraft usernames cannot exceed 16 characters."
+            );
         }
     }
 
     // ============================================================
-    // SERVER CONNECTION
+    // MAIN TICK
+    // ============================================================
+
+    private static void tick() {
+
+        if (client == null) {
+            return;
+        }
+
+        /*
+         * If we are not currently in a world, the bot is either:
+         *
+         * - still connecting
+         * - disconnected
+         * - on a menu
+         *
+         * In that situation, don't run movement logic.
+         */
+        if (client.world == null || client.player == null) {
+
+            clearMovementKeys();
+
+            connectedAt = 0;
+
+            tryReconnect();
+
+            return;
+        }
+
+        /*
+         * We are actually in the world.
+         */
+        if (connectedAt == 0) {
+
+            connectedAt = System.currentTimeMillis();
+
+            System.out.println(
+                    "[ChunkyBot] Joined world successfully."
+            );
+        }
+
+        /*
+         * Keep the bot looking straight upward.
+         *
+         * This reduces the amount of world geometry that has to be
+         * rendered compared with looking horizontally.
+         */
+        client.player.setPitch(-90.0f);
+
+        /*
+         * Hostile mob scanning is deliberately throttled.
+         * We don't need to search the entity list every tick.
+         */
+        if (System.currentTimeMillis() - lastMobScan >= 500) {
+
+            lastMobScan = System.currentTimeMillis();
+
+            scanForHostiles();
+        }
+
+        /*
+         * Emergency hostile-mob avoidance gets priority over normal
+         * wandering.
+         */
+        if (settings.bot.mob_avoidance.enabled
+                && nearestHostile != null) {
+
+            double distance = distanceTo(
+                    entityPosition(nearestHostile)
+            );
+
+            if (distance <= settings.bot.mob_avoidance.emergency_radius) {
+
+                fleeFromHostile();
+
+                return;
+            }
+
+            if (distance <= settings.bot.mob_avoidance.flee_radius) {
+
+                fleeFromHostile();
+
+                return;
+            }
+        }
+
+        /*
+         * Normal movement.
+         */
+        if (settings.bot.movement.enabled) {
+
+            updateMovement();
+        } else {
+
+            clearMovementKeys();
+        }
+
+        /*
+         * Optional block placement.
+         */
+        if (settings.bot.block_placing.enabled) {
+
+            handleBlockPlacement();
+        }
+    }
+
+    // ============================================================
+    // CONNECTION
     // ============================================================
 
     private static void connectToServer() {
 
-        if (client.world != null) {
-            return;
-        }
-
-        if (settings == null) {
+        if (settings == null || settings.server == null) {
             return;
         }
 
         long now = System.currentTimeMillis();
 
-        if (now - lastReconnectAttempt <
-                settings.server.connect_delay_seconds * 1000L) {
+        if (now - lastReconnectAttempt < 3000) {
             return;
         }
 
         lastReconnectAttempt = now;
 
-        String addressString =
-                settings.server.address + ":" + settings.server.port;
+        String addressText =
+                settings.server.address
+                        + ":"
+                        + settings.server.port;
 
         System.out.println(
-                "[Bot] Connecting to " + addressString
+                "[ChunkyBot] Connecting to "
+                        + addressText
         );
 
         try {
 
-            ServerAddress address =
-                    ServerAddress.parse(addressString);
+            ServerAddress address = ServerAddress.parse(
+                    addressText
+            );
 
-            ServerInfo serverInfo =
-                    new ServerInfo(
-                            "Chunky Bot Server",
-                            addressString,
-                            ServerInfo.ServerType.OTHER
-                    );
+            ServerInfo serverInfo = new ServerInfo(
+                    "Chunky Bot Server",
+                    addressText,
+                    ServerInfo.ServerType.OTHER
+            );
 
+            /*
+             * Offline/cracked server login:
+             *
+             * The username/UUID/access token are supplied through
+             * the Gradle runClient arguments in build.gradle.
+             */
             ConnectScreen.connect(
                     null,
                     client,
@@ -183,601 +362,12 @@ public class ChunkyBotClient implements ClientModInitializer {
         } catch (Exception e) {
 
             System.err.println(
-                    "[Bot] Connection attempt failed: "
-                            + e.getMessage()
+                    "[ChunkyBot] Connection attempt failed:"
             );
 
-            scheduleReconnect();
+            e.printStackTrace();
         }
     }
-
-    private static void scheduleReconnect() {
-
-        lastReconnectAttempt =
-                System.currentTimeMillis()
-                        + settings.server.reconnect_delay_seconds * 1000L;
-    }
-
-    // ============================================================
-    // MAIN TICK
-    // ============================================================
-
-    private static void tick() {
-
-        if (client.player == null ||
-                client.world == null) {
-
-            stopMovement();
-
-            if (settings.bot.auto_reconnect) {
-                tryReconnect();
-            }
-
-            return;
-        }
-
-        if (connectedAt == 0) {
-
-            connectedAt =
-                    System.currentTimeMillis();
-
-            patrolOrigin =
-                    client.player.getPos();
-
-            movementYaw =
-                    client.player.getYaw();
-
-            System.out.println(
-                    "[Bot] Connected successfully."
-            );
-        }
-
-        /*
-         * Resource-saving camera:
-         *
-         * Looking straight upward means the client renders
-         * considerably less useful world geometry.
-         */
-        client.player.setPitch(-90.0f);
-
-        /*
-         * Scan hostile mobs only every 10 ticks.
-         */
-        if (client.world.getTime() - lastMobScan >= 10) {
-
-            lastMobScan =
-                    client.world.getTime();
-
-            scanForHostiles();
-        }
-
-        if (settings.bot.movement.enabled) {
-
-            if (fleeing) {
-                fleeFromHostile();
-            } else {
-                patrolMovement();
-            }
-
-        } else {
-
-            stopMovement();
-        }
-
-        if (settings.bot.block_placing.enabled) {
-
-            long now =
-                    System.currentTimeMillis();
-
-            if (now >= nextBlockPlace) {
-
-                placeConfiguredBlock();
-
-                nextBlockPlace =
-                        now
-                                + settings.bot.block_placing.interval_seconds
-                                * 1000L;
-            }
-        }
-    }
-
-    // ============================================================
-    // MOVEMENT / PATROL
-    // ============================================================
-
-    private static void patrolMovement() {
-
-        long now =
-                System.currentTimeMillis();
-
-        /*
-         * Check whether the bot has wandered too far.
-         */
-        if (patrolOrigin != null) {
-
-            double distance =
-                    client.player.getPos()
-                            .distanceTo(patrolOrigin);
-
-            double radius =
-                    settings.bot.movement.patrol_radius;
-
-            if (distance > radius) {
-
-                moveToward(patrolOrigin);
-
-                moving = true;
-                idling = false;
-
-                return;
-            }
-        }
-
-        /*
-         * Idle state.
-         */
-        if (idling) {
-
-            stopMovement();
-
-            if (now >= nextIdleChange) {
-
-                idling = false;
-
-                nextMovementChange =
-                        now
-                                + randomBetween(
-                                        settings.bot.movement
-                                                .patrol_min_seconds,
-                                        settings.bot.movement
-                                                .patrol_max_seconds
-                                ) * 1000L;
-            }
-
-            return;
-        }
-
-        /*
-         * Pick a new direction.
-         */
-        if (now >= nextMovementChange) {
-
-            moving = true;
-
-            movementYaw =
-                    client.player.getYaw()
-                            + randomFloat(-140.0f, 140.0f);
-
-            currentStrafe = 0.0f;
-
-            if (settings.bot.movement.random_strafe) {
-
-                currentStrafe =
-                        RANDOM.nextBoolean()
-                                ? -1.0f
-                                : 1.0f;
-            }
-
-            nextMovementChange =
-                    now
-                            + randomBetween(
-                                    settings.bot.movement
-                                            .patrol_min_seconds,
-                                    settings.bot.movement
-                                            .patrol_max_seconds
-                            ) * 1000L;
-
-            /*
-             * Occasionally idle.
-             */
-            if (RANDOM.nextInt(100) < 12) {
-
-                idling = true;
-
-                nextIdleChange =
-                        now
-                                + randomBetween(
-                                        settings.bot.movement
-                                                .idle_min_seconds,
-                                        settings.bot.movement
-                                                .idle_max_seconds
-                                ) * 1000L;
-
-                stopMovement();
-
-                return;
-            }
-        }
-
-        /*
-         * Turn toward patrol direction.
-         */
-        if (settings.bot.movement.random_look) {
-
-            float currentYaw =
-                    client.player.getYaw();
-
-            float difference =
-                    wrapDegrees(
-                            movementYaw - currentYaw
-                    );
-
-            client.player.setYaw(
-                    currentYaw + difference * 0.08f
-            );
-        }
-
-        /*
-         * Forward movement.
-         */
-        client.options.forwardKey.setPressed(true);
-
-        client.options.backKey.setPressed(false);
-
-        /*
-         * Random strafing.
-         */
-        if (settings.bot.movement.random_strafe) {
-
-            if (currentStrafe < 0) {
-
-                client.options.leftKey.setPressed(true);
-                client.options.rightKey.setPressed(false);
-
-            } else if (currentStrafe > 0) {
-
-                client.options.rightKey.setPressed(true);
-                client.options.leftKey.setPressed(false);
-
-            }
-
-        } else {
-
-            client.options.leftKey.setPressed(false);
-            client.options.rightKey.setPressed(false);
-        }
-
-        /*
-         * Sprint.
-         */
-        client.options.sprintKey.setPressed(
-                settings.bot.movement.sprint
-        );
-
-        /*
-         * Jump over obstacles.
-         */
-        if (settings.bot.movement.jump_over_obstacles) {
-
-            if (client.player.horizontalCollision) {
-
-                client.options.jumpKey.setPressed(true);
-
-            } else {
-
-                client.options.jumpKey.setPressed(false);
-            }
-        }
-
-        /*
-         * Occasional random jump.
-         */
-        if (RANDOM.nextInt(300) == 0) {
-
-            client.options.jumpKey.setPressed(true);
-        }
-    }
-
-    // ============================================================
-    // RETURN TO PATROL AREA
-    // ============================================================
-
-    private static void moveToward(Vec3d target) {
-
-        Vec3d current =
-                client.player.getPos();
-
-        double dx =
-                target.x - current.x;
-
-        double dz =
-                target.z - current.z;
-
-        double yaw =
-                Math.toDegrees(
-                        Math.atan2(-dx, dz)
-                );
-
-        movementYaw =
-                (float) yaw;
-
-        client.options.forwardKey.setPressed(true);
-        client.options.backKey.setPressed(false);
-
-        client.options.leftKey.setPressed(false);
-        client.options.rightKey.setPressed(false);
-
-        client.options.sprintKey.setPressed(
-                settings.bot.movement.sprint
-        );
-
-        if (settings.bot.movement.jump_over_obstacles &&
-                client.player.horizontalCollision) {
-
-            client.options.jumpKey.setPressed(true);
-
-        } else {
-
-            client.options.jumpKey.setPressed(false);
-        }
-
-        float currentYaw =
-                client.player.getYaw();
-
-        float difference =
-                wrapDegrees(
-                        movementYaw - currentYaw
-                );
-
-        client.player.setYaw(
-                currentYaw + difference * 0.12f
-        );
-    }
-
-    // ============================================================
-    // MOB AVOIDANCE
-    // ============================================================
-
-    private static void scanForHostiles() {
-
-        nearestHostile = null;
-
-        if (!settings.bot.mob_avoidance.enabled) {
-            fleeing = false;
-            return;
-        }
-
-        double radius =
-                settings.bot.mob_avoidance.detection_radius;
-
-        Box box =
-                client.player
-                        .getBoundingBox()
-                        .expand(radius);
-
-        double closestDistance =
-                Double.MAX_VALUE;
-
-        for (HostileEntity hostile :
-                client.world.getEntitiesByClass(
-                        HostileEntity.class,
-                        box,
-                        entity -> entity.isAlive()
-                )) {
-
-            double distance =
-                    hostile.squaredDistanceTo(
-                            client.player
-                    );
-
-            if (distance < closestDistance) {
-
-                closestDistance = distance;
-
-                nearestHostile = hostile;
-            }
-        }
-
-        if (nearestHostile == null) {
-
-            fleeing = false;
-            return;
-        }
-
-        double distance =
-                Math.sqrt(closestDistance);
-
-        if (distance <=
-                settings.bot.mob_avoidance.flee_radius) {
-
-            fleeing = true;
-
-            System.out.println(
-                    "[Bot] Hostile detected at "
-                            + String.format("%.1f", distance)
-                            + " blocks."
-            );
-
-        } else {
-
-            fleeing = false;
-        }
-    }
-
-    private static void fleeFromHostile() {
-
-        if (nearestHostile == null ||
-                !nearestHostile.isAlive()) {
-
-            fleeing = false;
-            return;
-        }
-
-        Vec3d bot =
-                client.player.getPos();
-
-        Vec3d mob =
-                nearestHostile.getPos();
-
-        double dx =
-                bot.x - mob.x;
-
-        double dz =
-                bot.z - mob.z;
-
-        double length =
-                Math.sqrt(dx * dx + dz * dz);
-
-        if (length < 0.001) {
-
-            dx = 1;
-            dz = 0;
-            length = 1;
-        }
-
-        dx /= length;
-        dz /= length;
-
-        Vec3d escapeTarget =
-                bot.add(
-                        dx * 20.0,
-                        0,
-                        dz * 20.0
-                );
-
-        moveToward(escapeTarget);
-
-        /*
-         * Emergency sprint + jumping.
-         */
-        client.options.sprintKey.setPressed(true);
-
-        if (settings.bot.movement.jump_over_obstacles) {
-
-            client.options.jumpKey.setPressed(true);
-        }
-
-        double emergencyRadius =
-                settings.bot.mob_avoidance.emergency_radius;
-
-        double distance =
-                client.player.distanceTo(
-                        nearestHostile
-                );
-
-        if (distance <= emergencyRadius) {
-
-            client.options.sprintKey.setPressed(true);
-            client.options.jumpKey.setPressed(true);
-        }
-    }
-
-    // ============================================================
-    // BLOCK PLACEMENT
-    // ============================================================
-
-    private static void placeConfiguredBlock() {
-
-        if (client.player == null ||
-                client.world == null ||
-                client.interactionManager == null) {
-
-            return;
-        }
-
-        int slot =
-                settings.bot.block_placing.hotbar_slot;
-
-        if (slot < 0 || slot > 8) {
-            return;
-        }
-
-        client.player
-                .getInventory()
-                .setSelectedSlot(slot);
-
-        ItemStack stack =
-                client.player
-                        .getInventory()
-                        .getStack(slot);
-
-        /*
-         * Never create blocks.
-         * Only use an actual BlockItem already in the
-         * configured hotbar slot.
-         */
-        if (stack.isEmpty() ||
-                !(stack.getItem() instanceof BlockItem)) {
-
-            if (settings.bot.block_placing.only_if_block_in_slot) {
-                return;
-            }
-
-            return;
-        }
-
-        /*
-         * Find a block underneath / ahead of the player.
-         */
-        Vec3d playerPos =
-                client.player.getPos();
-
-        float yaw =
-                client.player.getYaw();
-
-        double radians =
-                Math.toRadians(yaw);
-
-        double forwardX =
-                -Math.sin(radians);
-
-        double forwardZ =
-                Math.cos(radians);
-
-        int distance =
-                settings.bot.block_placing.place_ahead;
-
-        BlockPos target =
-                BlockPos.ofFloored(
-                        playerPos.x
-                                + forwardX * distance,
-                        playerPos.y - 1,
-                        playerPos.z
-                                + forwardZ * distance
-                );
-
-        BlockState targetState =
-                client.world.getBlockState(target);
-
-        /*
-         * We click the top of the target block so that the
-         * held block can be placed on it.
-         */
-        if (!targetState.isAir()) {
-
-            Vec3d hitPos =
-                    Vec3d.ofCenter(target)
-                            .add(0, 0.5, 0);
-
-            BlockHitResult hit =
-                    new BlockHitResult(
-                            hitPos,
-                            Direction.UP,
-                            target,
-                            false
-                    );
-
-            try {
-
-                client.interactionManager.interactBlock(
-                        client.player,
-                        Hand.MAIN_HAND,
-                        hit
-                );
-
-            } catch (Exception e) {
-
-                System.err.println(
-                        "[Bot] Block placement failed: "
-                                + e.getMessage()
-                );
-            }
-        }
-    }
-
-    // ============================================================
-    // RECONNECT
-    // ============================================================
 
     private static void tryReconnect() {
 
@@ -785,338 +375,586 @@ public class ChunkyBotClient implements ClientModInitializer {
             return;
         }
 
-        long now =
-                System.currentTimeMillis();
+        if (client.world != null) {
+            return;
+        }
+
+        long now = System.currentTimeMillis();
 
         long delay =
-                settings.server.reconnect_delay_seconds
+                settings.bot.reconnect_delay_seconds
                         * 1000L;
 
         if (now - lastReconnectAttempt < delay) {
             return;
         }
 
-        lastReconnectAttempt = now;
+        /*
+         * Don't repeatedly trigger connection attempts while the
+         * ConnectScreen is already active.
+         */
+        if (client.currentScreen instanceof ConnectScreen) {
+            return;
+        }
 
         System.out.println(
-                "[Bot] Attempting reconnect..."
+                "[ChunkyBot] Attempting reconnect..."
         );
 
         connectToServer();
     }
 
     // ============================================================
-    // STOP MOVEMENT
+    // MOVEMENT
     // ============================================================
 
-    private static void stopMovement() {
+    private static void updateMovement() {
 
-        if (client == null) {
+        long now = System.currentTimeMillis();
+
+        /*
+         * If we're idling, occasionally leave the idle state.
+         */
+        if (idling) {
+
+            clearMovementKeys();
+
+            if (now >= nextIdleChange) {
+
+                idling = false;
+
+                nextMovementChange =
+                        now + randomMovementDuration();
+
+                System.out.println(
+                        "[ChunkyBot] Leaving idle state."
+                );
+            }
+
             return;
         }
 
+        /*
+         * Pick a new direction once the current movement period ends.
+         */
+        if (now >= nextMovementChange) {
+
+            chooseNewMovement();
+
+            /*
+             * Sometimes stop moving for a few seconds.
+             */
+            int idleChance = RANDOM.nextInt(100);
+
+            if (idleChance < 15) {
+
+                idling = true;
+
+                nextIdleChange =
+                        now + randomIdleDuration();
+
+                clearMovementKeys();
+
+                return;
+            }
+        }
+
+        /*
+         * Keep movement direction.
+         */
+        applyMovement();
+
+        /*
+         * Optional random looking.
+         *
+         * The bot still forces the pitch upward at the beginning
+         * of tick(), but this can change yaw.
+         */
+        if (settings.bot.movement.random_look) {
+
+            randomLook();
+        }
+
+        /*
+         * Random jumping.
+         */
+        if (settings.bot.movement.jump_over_obstacles) {
+
+            tryJump();
+        }
+    }
+
+    private static void chooseNewMovement() {
+
+        long now = System.currentTimeMillis();
+
+        movementYaw =
+                RANDOM.nextFloat() * 360.0f;
+
+        strafing =
+                settings.bot.movement.random_strafe
+                        && RANDOM.nextBoolean();
+
+        sprinting =
+                settings.bot.movement.sprint
+                        && RANDOM.nextInt(100) < 70;
+
+        moving = true;
+
+        jumping = false;
+
+        nextMovementChange =
+                now + randomMovementDuration();
+
+        client.player.setYaw(movementYaw);
+
+        System.out.println(
+                "[ChunkyBot] New movement direction: "
+                        + movementYaw
+        );
+    }
+
+    private static void applyMovement() {
+
+        if (client.player == null) {
+            return;
+        }
+
+        /*
+         * Clear all keys first so states don't get stuck.
+         */
         client.options.forwardKey.setPressed(false);
         client.options.backKey.setPressed(false);
         client.options.leftKey.setPressed(false);
         client.options.rightKey.setPressed(false);
-        client.options.jumpKey.setPressed(false);
-        client.options.sprintKey.setPressed(false);
 
-        moving = false;
-        strafing = false;
+        if (!moving) {
+            return;
+        }
+
+        /*
+         * Always move forward as the primary movement.
+         */
+        client.options.forwardKey.setPressed(true);
+
+        /*
+         * Occasionally strafe.
+         */
+        if (strafing) {
+
+            if (RANDOM.nextBoolean()) {
+
+                client.options.leftKey.setPressed(true);
+
+            } else {
+
+                client.options.rightKey.setPressed(true);
+            }
+        }
+
+        /*
+         * Sprint when configured.
+         */
+        if (settings.bot.movement.sprint
+                && sprinting) {
+
+            client.options.sprintKey.setPressed(true);
+
+        } else {
+
+            client.options.sprintKey.setPressed(false);
+        }
+    }
+
+    private static void randomLook() {
+
+        if (client.player == null) {
+            return;
+        }
+
+        /*
+         * Keep the pitch looking upward for low rendering load.
+         */
+        client.player.setPitch(-90.0f);
+
+        /*
+         * Small random yaw changes.
+         */
+        if (RANDOM.nextInt(100) < 8) {
+
+            float currentYaw =
+                    client.player.getYaw();
+
+            float change =
+                    RANDOM.nextFloat() * 80.0f - 40.0f;
+
+            client.player.setYaw(
+                    currentYaw + change
+            );
+        }
+    }
+
+    private static void tryJump() {
+
+        if (client.player == null) {
+            return;
+        }
+
+        /*
+         * Don't spam jumps.
+         */
+        if (client.player.isOnGround()
+                && RANDOM.nextInt(100) < 3) {
+
+            client.options.jumpKey.setPressed(true);
+
+            jumping = true;
+
+        } else {
+
+            client.options.jumpKey.setPressed(false);
+
+            jumping = false;
+        }
     }
 
     // ============================================================
-    // RENDER HEALTH SERVER
+    // HOSTILE MOB AVOIDANCE
     // ============================================================
 
-    private static void startRenderHealthServer() {
+    private static void scanForHostiles() {
 
-        String portString =
-                System.getenv("PORT");
+        if (client.world == null
+                || client.player == null) {
 
-        if (portString == null ||
-                portString.isBlank()) {
-
-            System.out.println(
-                    "[Render] PORT not set; health server disabled."
-            );
+            nearestHostile = null;
 
             return;
         }
 
-        int port;
+        double radius =
+                settings.bot.mob_avoidance.detection_radius;
+
+        List<HostileEntity> entities =
+                client.world.getEntitiesByClass(
+                        HostileEntity.class,
+                        client.player
+                                .getBoundingBox()
+                                .expand(radius),
+                        entity -> entity.isAlive()
+                );
+
+        HostileEntity closest = null;
+
+        double closestDistance =
+                Double.MAX_VALUE;
+
+        for (HostileEntity entity : entities) {
+
+            double distance =
+                    distanceTo(entityPosition(entity));
+
+            if (distance < closestDistance) {
+
+                closestDistance = distance;
+
+                closest = entity;
+            }
+        }
+
+        nearestHostile = closest;
+    }
+
+    private static void fleeFromHostile() {
+
+        if (client.player == null
+                || nearestHostile == null) {
+
+            return;
+        }
+
+        Vec3d playerPos =
+                playerPosition();
+
+        Vec3d hostilePos =
+                entityPosition(nearestHostile);
+
+        /*
+         * Direction from hostile -> player.
+         */
+        double dx =
+                playerPos.x - hostilePos.x;
+
+        double dz =
+                playerPos.z - hostilePos.z;
+
+        double length =
+                Math.sqrt(dx * dx + dz * dz);
+
+        if (length < 0.001) {
+
+            dx = 1.0;
+            dz = 0.0;
+            length = 1.0;
+        }
+
+        dx /= length;
+        dz /= length;
+
+        /*
+         * Convert the escape vector to a Minecraft yaw.
+         */
+        float escapeYaw =
+                (float) (
+                        Math.toDegrees(
+                                Math.atan2(-dx, dz)
+                        )
+                );
+
+        client.player.setYaw(escapeYaw);
+
+        /*
+         * Sprint away.
+         */
+        client.options.forwardKey.setPressed(true);
+
+        client.options.sprintKey.setPressed(true);
+
+        /*
+         * Emergency jump.
+         */
+        if (client.player.isOnGround()) {
+
+            client.options.jumpKey.setPressed(true);
+        }
+
+        moving = true;
+        sprinting = true;
+    }
+
+    // ============================================================
+    // BLOCK PLACEMENT
+    // ============================================================
+
+    private static void handleBlockPlacement() {
+
+        if (client.player == null
+                || client.world == null
+                || client.interactionManager == null) {
+
+            return;
+        }
+
+        long now = System.currentTimeMillis();
+
+        long interval =
+                Math.max(
+                        1,
+                        settings.bot.block_placing
+                                .interval_seconds
+                ) * 1000L;
+
+        if (now < nextBlockPlace) {
+            return;
+        }
+
+        nextBlockPlace = now + interval;
+
+        int slot =
+                Math.max(
+                        0,
+                        Math.min(
+                                8,
+                                settings.bot.block_placing
+                                        .hotbar_slot
+                        )
+                );
+
+        ItemStack stack =
+                client.player
+                        .getInventory()
+                        .getStack(slot);
+
+        /*
+         * Only place if the selected slot contains a block.
+         */
+        if (settings.bot.block_placing.only_if_block_in_slot) {
+
+            if (!(stack.getItem() instanceof BlockItem)) {
+
+                System.out.println(
+                        "[ChunkyBot] Hotbar slot "
+                                + slot
+                                + " does not contain a block."
+                );
+
+                return;
+            }
+        }
+
+        /*
+         * Switch to configured hotbar slot.
+         */
+        client.player
+                .getInventory()
+                .setSelectedSlot(slot);
+
+        /*
+         * Find the block immediately below the player.
+         */
+        BlockPos below =
+                client.player
+                        .getBlockPos()
+                        .down();
+
+        BlockState belowState =
+                client.world.getBlockState(below);
+
+        /*
+         * Only attempt placement if the target block can act
+         * as a placement surface.
+         */
+        if (belowState.isAir()) {
+            return;
+        }
+
+        /*
+         * Place one block in front of the player.
+         */
+        Vec3d playerPos =
+                playerPosition();
+
+        float yaw =
+                client.player.getYaw();
+
+        double yawRadians =
+                Math.toRadians(yaw);
+
+        double forwardX =
+                -Math.sin(yawRadians);
+
+        double forwardZ =
+                Math.cos(yawRadians);
+
+        BlockPos target =
+                BlockPos.ofFloored(
+                        playerPos.x + forwardX,
+                        playerPos.y,
+                        playerPos.z + forwardZ
+                );
+
+        BlockState targetState =
+                client.world.getBlockState(target);
+
+        if (!targetState.isAir()) {
+            return;
+        }
+
+        /*
+         * Find an adjacent solid block to place against.
+         */
+        BlockPos support = target.down();
+
+        BlockState supportState =
+                client.world.getBlockState(support);
+
+        if (supportState.isAir()) {
+            return;
+        }
+
+        BlockHitResult hitResult =
+                new BlockHitResult(
+                        new Vec3d(
+                                target.getX() + 0.5,
+                                target.getY(),
+                                target.getZ() + 0.5
+                        ),
+                        Direction.UP,
+                        support,
+                        false
+                );
 
         try {
 
-            port =
-                    Integer.parseInt(portString);
-
-        } catch (NumberFormatException e) {
-
-            System.err.println(
-                    "[Render] Invalid PORT: "
-                            + portString
+            client.interactionManager.interactBlock(
+                    client.player,
+                    Hand.MAIN_HAND,
+                    hitResult
             );
 
+        } catch (Exception e) {
+
+            System.err.println(
+                    "[ChunkyBot] Block placement failed:"
+            );
+
+            e.printStackTrace();
+        }
+    }
+
+    // ============================================================
+    // POSITION HELPERS
+    // ============================================================
+
+    /*
+     * IMPORTANT:
+     *
+     * Minecraft 1.21.11 Yarn mappings used by this project don't
+     * expose ClientPlayerEntity.getPos() the way the previous
+     * version expected.
+     *
+     * Therefore positions are constructed from getX/getY/getZ.
+     */
+
+    private static Vec3d playerPosition() {
+
+        if (client.player == null) {
+
+            return Vec3d.ZERO;
+        }
+
+        return new Vec3d(
+                client.player.getX(),
+                client.player.getY(),
+                client.player.getZ()
+        );
+    }
+
+    private static Vec3d entityPosition(Entity entity) {
+
+        return new Vec3d(
+                entity.getX(),
+                entity.getY(),
+                entity.getZ()
+        );
+    }
+
+    private static double distanceTo(Vec3d position) {
+
+        Vec3d player =
+                playerPosition();
+
+        double dx =
+                player.x - position.x;
+
+        double dy =
+                player.y - position.y;
+
+        double dz =
+                player.z - position.z;
+
+        return Math.sqrt(
+                dx * dx
+                        + dy * dy
+                        + dz * dz
+        );
+    }
+
+    // ============================================================
+    // MOVEMENT CLEANUP
+    // ============================================================
+
+    private static void clearMovementKeys() {
+
+        if (client == null) {
             return;
-        }
-
-        Thread healthThread =
-                new Thread(() -> {
-
-                    try (ServerSocket server =
-                                 new ServerSocket(port)) {
-
-                        System.out.println(
-                                "[Render] Health server listening on port "
-                                        + port
-                        );
-
-                        while (true) {
-
-                            try (Socket socket =
-                                         server.accept();
-                                 BufferedReader in =
-                                         new BufferedReader(
-                                                 new InputStreamReader(
-                                                         socket.getInputStream(),
-                                                         StandardCharsets.UTF_8
-                                                 )
-                                         );
-                                 OutputStream out =
-                                         socket.getOutputStream()) {
-
-                                String requestLine =
-                                        in.readLine();
-
-                                if (requestLine == null) {
-                                    continue;
-                                }
-
-                                /*
-                                 * IMPORTANT:
-                                 *
-                                 * "Chunky Bot is alive" is exactly
-                                 * 19 bytes in UTF-8.
-                                 */
-                                String body =
-                                        "Chunky Bot is alive";
-
-                                byte[] bodyBytes =
-                                        body.getBytes(
-                                                StandardCharsets.UTF_8
-                                        );
-
-                                String response =
-                                        "HTTP/1.1 200 OK\r\n"
-                                                + "Content-Type: text/plain\r\n"
-                                                + "Content-Length: "
-                                                + bodyBytes.length
-                                                + "\r\n"
-                                                + "Connection: close\r\n"
-                                                + "\r\n";
-
-                                out.write(
-                                        response.getBytes(
-                                                StandardCharsets.UTF_8
-                                        )
-                                );
-
-                                out.write(bodyBytes);
-
-                                out.flush();
-
-                            } catch (Exception ignored) {
-                                /*
-                                 * Ignore individual Render health
-                                 * check connection errors.
-                                 */
-                            }
-                        }
-
-                    } catch (Exception e) {
-
-                        System.err.println(
-                                "[Render] Health server failed: "
-                                        + e.getMessage()
-                        );
-                    }
-
-                }, "render-health-server");
-
-        healthThread.setDaemon(true);
-        healthThread.start();
-    }
-
-    // ============================================================
-    // UTILITY
-    // ============================================================
-
-    private static int randomBetween(
-            int min,
-            int max) {
-
-        if (max <= min) {
-            return min;
-        }
-
-        return min +
-                RANDOM.nextInt(
-                        max - min + 1
-                );
-    }
-
-    private static float randomFloat(
-            float min,
-            float max) {
-
-        return min +
-                RANDOM.nextFloat()
-                        * (max - min);
-    }
-
-    private static float wrapDegrees(
-            float degrees) {
-
-        while (degrees >= 180.0f) {
-            degrees -= 360.0f;
-        }
-
-        while (degrees < -180.0f) {
-            degrees += 360.0f;
-        }
-
-        return degrees;
-    }
-
-    // ============================================================
-    // SETTINGS CLASSES
-    // ============================================================
-
-    public static class Settings {
-
-        public Server server =
-                new Server();
-
-        public Account account =
-                new Account();
-
-        public Bot bot =
-                new Bot();
-    }
-
-    public static class Server {
-
-        public String address =
-                "YOUR-ATERNOS-ADDRESS";
-
-        public int port =
-                25565;
-
-        public String minecraft_version =
-                "1.21.11";
-
-        public boolean auto_reconnect =
-                true;
-
-        public int reconnect_delay_seconds =
-                10;
-
-        public int connect_delay_seconds =
-                3;
-    }
-
-    public static class Account {
-
-        public String username =
-                "ChunkyBot";
-    }
-
-    public static class Bot {
-
-        public boolean auto_reconnect =
-                true;
-
-        public int reconnect_delay_seconds =
-                10;
-
-        public int connect_delay_seconds =
-                3;
-
-        public Movement movement =
-                new Movement();
-
-        public MobAvoidance mob_avoidance =
-                new MobAvoidance();
-
-        public BlockPlacing block_placing =
-                new BlockPlacing();
-    }
-
-    public static class Movement {
-
-        public boolean enabled =
-                true;
-
-        public double patrol_radius =
-                20.0;
-
-        public boolean sprint =
-                true;
-
-        public boolean jump_over_obstacles =
-                true;
-
-        public boolean random_strafe =
-                true;
-
-        public boolean random_look =
-                true;
-
-        public int patrol_min_seconds =
-                6;
-
-        public int patrol_max_seconds =
-                10;
-
-        public int idle_min_seconds =
-                2;
-
-        public int idle_max_seconds =
-                5;
-    }
-
-    public static class MobAvoidance {
-
-        public boolean enabled =
-                true;
-
-        public double detection_radius =
-                16.0;
-
-        public double flee_radius =
-                11.0;
-
-        public double emergency_radius =
-                6.0;
-    }
-
-    public static class BlockPlacing {
-
-        public boolean enabled =
-                false;
-
-        public int hotbar_slot =
-                0;
-
-        public int interval_seconds =
-                10;
-
-        public int place_ahead =
-                1;
-
-        public boolean only_if_block_in_slot =
-                true;
-    }
-}
