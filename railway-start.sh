@@ -4,7 +4,7 @@ set -e
 
 echo "=== Fabric 1.21.11 Offline Chunky Bot ==="
 echo "No Microsoft authentication is used."
-echo "Server, username, movement and block-placement settings come from bot-settings.json.”
+echo "Server, username, movement and block-placement settings come from bot-settings.json."
 
 PORT="${PORT:-10000}"
 
