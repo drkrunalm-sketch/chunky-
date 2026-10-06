@@ -36,7 +36,7 @@ while True:
             b"Content-Type: text/plain\r\n"
             + f"Content-Length: {len(body)}\r\n".encode()
             + b"Connection: close\r\n"
-            b"\r\n"
+            + b"\r\n"
             + body
         )
 
@@ -49,7 +49,7 @@ while True:
         conn.close()
 PY
 
-echo "Starting Fabric client with a virtual display..."
+echo "Starting virtual display..."
 
 export DISPLAY=:99
 
@@ -63,8 +63,10 @@ Xvfb :99 \
 
 sleep 2
 
-echo "Starting Minecraft..."
+echo "Starting Minecraft client..."
 
-./gradlew runClient \
+exec ./gradlew runClient \
     --no-daemon \
-    --console=plain
+    --console=plain \
+    -Dorg.gradle.daemon=false \
+    -Dorg.gradle.parallel=false
