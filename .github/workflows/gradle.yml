@@ -25,8 +25,7 @@ jobs:
 
       - name: Build bot
         run: |
-          chmod +x gradlew
-          ./gradlew --no-daemon --console=plain build
+          gradle --no-daemon --console=plain build
 
       - name: Start virtual display
         run: |
@@ -35,4 +34,4 @@ jobs:
 
       - name: Run bot
         run: |
-          ./gradlew --no-daemon --console=plain runClient
+          gradle --no-daemon --console=plain runClient
