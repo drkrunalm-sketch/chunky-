@@ -33,7 +33,7 @@
       "enabled": true,
       "hotbar_slot": 1,
       "interval_seconds": 12,
-      "place_ahead": true,
+      "place_ahead": 1,
       "only_if_block_in_slot": true
     }
   }
