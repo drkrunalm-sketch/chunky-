@@ -46,4 +46,4 @@ jobs:
 
       - name: Run bot
         run: |
-          gradle --no-daemon --console=plain runClient
+          gradle --no-daemon --console=plain runClient --stacktrace --info
