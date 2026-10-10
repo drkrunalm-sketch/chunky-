@@ -1,9 +1,8 @@
+
 plugins {
     id 'net.fabricmc.fabric-loom-remap' version "${loom_version}"
     id 'java'
 }
-
-import groovy.json.JsonSlurper
 
 version = project.findProperty('mod_version') ?: '1.0.0'
 group = project.findProperty('maven_group') ?: 'com.shaurya.chunkybot'
@@ -42,8 +41,6 @@ loom {
             client()
             name = 'Chunky Bot Development Client'
             runDir = 'run'
-            property 'fabric.development', 'true'
-            property 'fabric.log.level', 'info'
         }
     }
 }
@@ -70,12 +67,11 @@ tasks.register('prepareBotMods', Copy) {
 
 tasks.named('runClient') {
     dependsOn tasks.named('prepareBotMods')
-
     doFirst {
-        def cfg = new JsonSlurper().parse(file('bot-settings.json'))
+        def cfg = new groovy.json.JsonSlurper().parse(file('bot-settings.json'))
         def username = cfg.account.username.toString()
 
-        if (username.isEmpty() || username.length() > 16) {
+        if (username.length() > 16 || username.isEmpty()) {
             throw new GradleException('Invalid account.username')
         }
 
@@ -90,14 +86,37 @@ tasks.named('runClient') {
     }
 }
 
-java {
-    toolchain {
+tasks.register('prodClient', net.fabricmc.loom.task.prod.ClientProductionRunTask) {
+    useXVFB = true
+    runDir = file('run')
+
+    javaLauncher = javaToolchains.launcherFor {
         languageVersion = JavaLanguageVersion.of(21)
     }
-    withSourcesJar()
-}
 
-tasks.withType(JavaCompile).configureEach {
-    options.release = 21
-    options.encoding = 'UTF-8'
+    // Use the production-remapped bot JAR.
+    mods.from(tasks.named('remapJar'))
+
+    // Load the actual installed client mods without the development remapper.
+    mods.from(fileTree('mods') {
+        include '*.jar'
+    })
+
+    def cfg = new groovy.json.JsonSlurper().parse(file('bot-settings.json'))
+    def username = cfg.account.username.toString()
+
+    if (username.length() > 16 || username.isEmpty()) {
+        throw new GradleException('Invalid account.username')
+    }
+
+    def offlineUuid = UUID.nameUUIDFromBytes(
+        ('OfflinePlayer:' + username).getBytes('UTF-8')
+    ).toString()
+
+    programArgs.addAll([
+        '--username', username,
+        '--uuid', offlineUuid,
+        '--accessToken', '0',
+        '--userType', 'legacy'
+    ])
 }
