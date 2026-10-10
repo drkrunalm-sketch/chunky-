@@ -40,20 +40,25 @@ jobs:
           echo "=== Mod JARs in repository ==="
           find mods -maxdepth 1 -type f -name '*.jar' -printf '%f\n' | sort
 
-      - name: Inspect enum-extension class tweakers
+      - name: Inspect all enum-extension declarations
         shell: bash
         run: |
           shopt -s nullglob
+
+          found=0
 
           for jar in mods/*.jar; do
             while IFS= read -r entry; do
               [ -n "$entry" ] || continue
 
-              if unzip -p "$jar" "$entry" |
+              content="$(unzip -p "$jar" "$entry" 2>/dev/null || true)"
+
+              if printf '%s\n' "$content" |
                 grep -Eq '^[[:space:]]*(transitive-)?extend-enum[[:space:]]'; then
-                echo "ENUM EXTENSION FOUND: $jar -> $entry"
-                unzip -p "$jar" "$entry" |
-                  grep -nE '^[[:space:]]*(transitive-)?extend-enum[[:space:]]'
+                found=1
+                echo
+                echo "===== ENUM EXTENSION: $jar -> $entry ====="
+                printf '%s\n' "$content"
               fi
             done < <(
               unzip -Z1 "$jar" |
@@ -61,9 +66,9 @@ jobs:
             )
           done
 
-      - name: Check Farmer's Delight class tweaker
-        run: |
-          unzip -p "mods/FarmersDelight-1.21.11-3.6.16+refabricated.jar" farmersdelight.classtweaker | head -30
+          if [ "$found" -eq 0 ]; then
+            echo "No enum-extension declarations found."
+          fi
 
       - name: Build bot
         run: |
