@@ -1,82 +1,88 @@
 name: Run Fabric Bot
 
 on:
-workflow_dispatch:
+  workflow_dispatch:
 
 jobs:
-bot:
-runs-on: ubuntu-latest
-timeout-minutes: 350
+  bot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
 
-steps:
-  - name: Checkout repository
-    uses: actions/checkout@v4
-  - name: Set up Java 21
-    uses: actions/setup-java@v4
-    with:
-      distribution: temurin
-      java-version: '21'
-  - name: Install Xvfb
-    run: |
-      sudo apt-get update
-      sudo apt-get install -y xvfb
-  - name: Prepare Fabric mod sources
-    run: |
-      mkdir -p src/main/java/com/shaurya/chunkybot
-      mkdir -p src/main/resources
-      mkdir -p mods
-      cp ChunkyBotClient.java \
-        src/main/java/com/shaurya/chunkybot/ChunkyBotClient.java
-      cp fabric.mod.json \
-        src/main/resources/fabric.mod.json
-  - name: Inspect enum-extension declarations
-    shell: bash
-    run: |
-      shopt -s nullglob
-      found=0
-      for jar in mods/*.jar; do
-        while IFS= read -r entry; do
-          [ -n "$entry" ] || continue
-          content="$(unzip -p "$jar" "$entry" 2>/dev/null || true)"
-          if printf '%s\n' "$content" |
-            grep -Eq '^[[:space:]]*(transitive-)?extend-enum[[:space:]]'; then
-            found=1
-            echo
-            echo "===== ENUM EXTENSION: $jar -> $entry ====="
-            printf '%s\n' "$content"
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Install Xvfb
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb
+
+      - name: Prepare Fabric mod sources
+        run: |
+          mkdir -p src/main/java/com/shaurya/chunkybot
+          mkdir -p src/main/resources
+          mkdir -p mods
+          cp ChunkyBotClient.java src/main/java/com/shaurya/chunkybot/ChunkyBotClient.java
+          cp fabric.mod.json src/main/resources/fabric.mod.json
+
+      - name: Inspect enum-extension declarations
+        shell: bash
+        run: |
+          shopt -s nullglob
+          found=0
+
+          for jar in mods/*.jar; do
+            while IFS= read -r entry; do
+              [ -n "$entry" ] || continue
+              content="$(unzip -p "$jar" "$entry" 2>/dev/null || true)"
+
+              if printf '%s\n' "$content" | grep -Eq '^[[:space:]]*(transitive-)?extend-enum[[:space:]]'; then
+                found=1
+                echo
+                echo "===== ENUM EXTENSION: $jar -> $entry ====="
+                printf '%s\n' "$content"
+              fi
+            done < <(unzip -Z1 "$jar" | grep -E '\.(classtweaker|accesswidener)$' || true)
+          done
+
+          if [ "$found" -eq 0 ]; then
+            echo "No enum-extension declarations found."
           fi
-        done < <(
-          unzip -Z1 "$jar" |
-            grep -E '\.(classtweaker|accesswidener)$' || true
-        )
-      done
-      if [ "$found" -eq 0 ]; then
-        echo "No enum-extension declarations found."
-      fi
-  - name: Build bot
-    run: |
-      gradle --no-daemon --console=plain build
-  - name: Prepare runtime mods
-    run: |
-      gradle --no-daemon --console=plain prepareBotMods
-      echo "=== Temporary diagnostic: excluding Farmer's Delight ==="
-      fd_jar="run/mods/FarmersDelight-1.21.11-3.6.16+refabricated.jar"
-      if [ ! -f "$fd_jar" ]; then
-        echo "ERROR: Farmer's Delight JAR was not found in run/mods."
-        echo "Check the JAR filename and prepareBotMods output."
-        exit 1
-      fi
-      mkdir -p /tmp/diagnostic-mods
-      mv "$fd_jar" /tmp/diagnostic-mods/
-      echo "Farmer's Delight remains in the repository's mods folder."
-      echo "Only its temporary runtime copy has been excluded."
-      echo "=== Remaining runtime mod count ==="
-      find run/mods -maxdepth 1 -type f -name '*.jar' | wc -l
-  - name: Start virtual display
-    run: |
-      Xvfb :99 -screen 0 1024x768x24 -ac +extension GLX +render -noreset &
-      echo "DISPLAY=:99" >> "$GITHUB_ENV"
-  - name: Run diagnostic client
-    run: |
-      gradle --no-daemon --console=plain \
-        runClient -x prepareBotMods --stacktrace --info
+
+      - name: Build bot
+        run: gradle --no-daemon --console=plain build
+
+      - name: Prepare runtime mods
+        run: |
+          gradle --no-daemon --console=plain prepareBotMods
+
+          echo "=== Temporary diagnostic: excluding Farmer's Delight ==="
+          fd_jar="run/mods/FarmersDelight-1.21.11-3.6.16+refabricated.jar"
+
+          if [ ! -f "$fd_jar" ]; then
+            echo "ERROR: Farmer's Delight JAR was not found in run/mods."
+            echo "Check the JAR filename and prepareBotMods output."
+            exit 1
+          fi
+
+          mkdir -p /tmp/diagnostic-mods
+          mv "$fd_jar" /tmp/diagnostic-mods/
+
+          echo "Farmer's Delight remains in the repository's mods folder."
+          echo "Only its temporary runtime copy has been excluded."
+          find run/mods -maxdepth 1 -type f -name '*.jar' | wc -l
+
+      - name: Start virtual display
+        run: |
+          Xvfb :99 -screen 0 1024x768x24 -ac +extension GLX +render -noreset &
+          echo "DISPLAY=:99" >> "$GITHUB_ENV"
+
+      - name: Run diagnostic client
+        run: |
+          gradle --no-daemon --console=plain runClient -x prepareBotMods --stacktrace --info
