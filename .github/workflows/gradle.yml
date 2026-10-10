@@ -28,6 +28,8 @@ jobs:
         run: |
           mkdir -p src/main/java/com/shaurya/chunkybot
           mkdir -p src/main/resources
+          mkdir -p mods
+
           cp ChunkyBotClient.java src/main/java/com/shaurya/chunkybot/ChunkyBotClient.java
           cp fabric.mod.json src/main/resources/fabric.mod.json
 
@@ -40,13 +42,51 @@ jobs:
           find mods -maxdepth 1 -type f -iname '*fish*of*thieves*.jar' -print -quit | grep -q .
 
           echo "Both required mods are present."
-          echo "Total mod JARs:"
-          find mods -maxdepth 1 -type f -name '*.jar' | wc -l
 
-      - name: Build production bot JAR
+      - name: Inspect enum-extension declarations
+        shell: bash
         run: |
-          gradle --no-daemon --console=plain build
+          shopt -s nullglob
+          found=0
 
-      - name: Launch production Fabric client
+          for jar in mods/*.jar; do
+            while IFS= read -r entry; do
+              [ -n "$entry" ] || continue
+              content="$(unzip -p "$jar" "$entry" 2>/dev/null || true)"
+
+              if printf '%s\n' "$content" | grep -Eq '^[[:space:]]*(transitive-)?extend-enum[[:space:]]'; then
+                found=1
+                echo
+                echo "===== ENUM EXTENSION: $jar -> $entry ====="
+                printf '%s\n' "$content"
+              fi
+            done < <(unzip -Z1 "$jar" | grep -E '\.(classtweaker|accesswidener)$' || true)
+          done
+
+          if [ "$found" -eq 0 ]; then
+            echo "No enum-extension declarations found."
+          fi
+
+      - name: Build bot
+        run: gradle --no-daemon --console=plain build
+
+      - name: Prepare runtime mods
         run: |
-          gradle --no-daemon --console=plain prodClient --stacktrace --info
+          gradle --no-daemon --console=plain prepareBotMods
+
+          echo "Checking runtime mods..."
+          test -f "run/mods/FarmersDelight-1.21.11-3.6.16+refabricated.jar"
+          find run/mods -maxdepth 1 -type f -iname '*fish*of*thieves*.jar' -print -quit | grep -q .
+
+          echo "Farmer's Delight and Fish of Thieves are both included."
+          echo "Runtime mod count:"
+          find run/mods -maxdepth 1 -type f -name '*.jar' | wc -l
+
+      - name: Start virtual display
+        run: |
+          Xvfb :99 -screen 0 1024x768x24 -ac +extension GLX +render -noreset &
+          echo "DISPLAY=:99" >> "$GITHUB_ENV"
+
+      - name: Run diagnostic client
+        run: |
+          gradle --no-daemon --console=plain runClient -x prepareBotMods --stacktrace --info
