@@ -89,4 +89,4 @@ jobs:
 
       - name: Run diagnostic client
         run: |
-          gradle --no-daemon --console=plain runClient -x prepareBotMods --stacktrace --info
+          gradle --no-daemon --console=plain prodClient -x prepareBotMods --stacktrace --info
