@@ -1,3 +1,4 @@
+
 name: Run Fabric Bot
 
 on:
@@ -27,62 +28,25 @@ jobs:
         run: |
           mkdir -p src/main/java/com/shaurya/chunkybot
           mkdir -p src/main/resources
-          mkdir -p mods
           cp ChunkyBotClient.java src/main/java/com/shaurya/chunkybot/ChunkyBotClient.java
           cp fabric.mod.json src/main/resources/fabric.mod.json
 
-      - name: Inspect enum-extension declarations
-        shell: bash
+      - name: Verify required mods
         run: |
-          shopt -s nullglob
-          found=0
+          echo "Checking Farmer's Delight..."
+          test -f "mods/FarmersDelight-1.21.11-3.6.16+refabricated.jar"
 
-          for jar in mods/*.jar; do
-            while IFS= read -r entry; do
-              [ -n "$entry" ] || continue
-              content="$(unzip -p "$jar" "$entry" 2>/dev/null || true)"
+          echo "Checking Fish of Thieves..."
+          find mods -maxdepth 1 -type f -iname '*fish*of*thieves*.jar' -print -quit | grep -q .
 
-              if printf '%s\n' "$content" | grep -Eq '^[[:space:]]*(transitive-)?extend-enum[[:space:]]'; then
-                found=1
-                echo
-                echo "===== ENUM EXTENSION: $jar -> $entry ====="
-                printf '%s\n' "$content"
-              fi
-            done < <(unzip -Z1 "$jar" | grep -E '\.(classtweaker|accesswidener)$' || true)
-          done
+          echo "Both required mods are present."
+          echo "Total mod JARs:"
+          find mods -maxdepth 1 -type f -name '*.jar' | wc -l
 
-          if [ "$found" -eq 0 ]; then
-            echo "No enum-extension declarations found."
-          fi
-
-      - name: Build bot
-        run: gradle --no-daemon --console=plain build
-
-      - name: Prepare runtime mods
+      - name: Build production bot JAR
         run: |
-          gradle --no-daemon --console=plain prepareBotMods
+          gradle --no-daemon --console=plain build
 
-          echo "=== Temporary diagnostic: excluding Farmer's Delight ==="
-          fd_jar="run/mods/FarmersDelight-1.21.11-3.6.16+refabricated.jar"
-
-          if [ ! -f "$fd_jar" ]; then
-            echo "ERROR: Farmer's Delight JAR was not found in run/mods."
-            echo "Check the JAR filename and prepareBotMods output."
-            exit 1
-          fi
-
-          mkdir -p /tmp/diagnostic-mods
-          mv "$fd_jar" /tmp/diagnostic-mods/
-
-          echo "Farmer's Delight remains in the repository's mods folder."
-          echo "Only its temporary runtime copy has been excluded."
-          find run/mods -maxdepth 1 -type f -name '*.jar' | wc -l
-
-      - name: Start virtual display
+      - name: Launch production Fabric client
         run: |
-          Xvfb :99 -screen 0 1024x768x24 -ac +extension GLX +render -noreset &
-          echo "DISPLAY=:99" >> "$GITHUB_ENV"
-
-      - name: Run diagnostic client
-        run: |
-          gradle --no-daemon --console=plain runClient -x prepareBotMods --stacktrace --info
+          gradle --no-daemon --console=plain prodClient --stacktrace --info
