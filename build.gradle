@@ -7,18 +7,17 @@ import groovy.json.JsonSlurper
 
 version = project.findProperty('mod_version') ?: '1.0.0'
 group = project.findProperty('maven_group') ?: 'com.shaurya.chunkybot'
+
 base {
     archivesName = 'chunky-bot'
 }
 
 repositories {
     mavenCentral()
-
     maven {
         name = "Fabric"
         url = "https://maven.fabricmc.net/"
     }
-
     maven {
         name = "Mojang"
         url = "https://libraries.minecraft.net/"
@@ -28,8 +27,8 @@ repositories {
 dependencies {
     minecraft "com.mojang:minecraft:${project.findProperty('minecraft_version') ?: '1.21.11'}"
     mappings "net.fabricmc:yarn:${project.findProperty('yarn_mappings') ?: '1.21.11+build.6'}:v2"
-    modImplementation "net.fabricmc:fabric-loader:${project.findProperty('loader_version') ?: '0.19.3'}"
-    modImplementation "net.fabricmc.fabric-api:fabric-api:${project.findProperty('fabric_version') ?: '0.141.4+1.21.11'}"
+    modImplementation "net.fabricmc:fabric-loader:${project.findProperty('loader_version') ?: '0.19.5'}"
+    modImplementation "net.fabricmc.fabric-api:fabric-api:${project.findProperty('fabric_version') ?: '0.141.6+1.21.11'}"
 }
 
 loom {
@@ -41,7 +40,7 @@ loom {
     runs {
         client {
             client()
-            name = 'Chunky Bot Client'
+            name = 'Chunky Bot Development Client'
             runDir = 'run'
             property 'fabric.development', 'true'
             property 'fabric.log.level', 'info'
@@ -54,7 +53,9 @@ processResources {
         into ''
         rename { 'bot-settings.json' }
     }
+
     inputs.property 'version', project.version
+
     filesMatching('fabric.mod.json') {
         expand 'version': project.version
     }
@@ -69,11 +70,19 @@ tasks.register('prepareBotMods', Copy) {
 
 tasks.named('runClient') {
     dependsOn tasks.named('prepareBotMods')
+
     doFirst {
         def cfg = new JsonSlurper().parse(file('bot-settings.json'))
         def username = cfg.account.username.toString()
-        if (username.length() > 16 || username.isEmpty()) throw new GradleException('Invalid account.username')
-        def offlineUuid = UUID.nameUUIDFromBytes(('OfflinePlayer:' + username).getBytes('UTF-8')).toString()
+
+        if (username.isEmpty() || username.length() > 16) {
+            throw new GradleException('Invalid account.username')
+        }
+
+        def offlineUuid = UUID.nameUUIDFromBytes(
+            ('OfflinePlayer:' + username).getBytes('UTF-8')
+        ).toString()
+
         args '--username', username
         args '--uuid', offlineUuid
         args '--accessToken', '0'
