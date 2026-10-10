@@ -61,6 +61,10 @@ jobs:
             )
           done
 
+      - name: Check Farmer's Delight class tweaker
+        run: |
+          unzip -p "mods/FarmersDelight-1.21.11-3.6.16+refabricated.jar" farmersdelight.classtweaker | head -30
+
       - name: Build bot
         run: |
           gradle --no-daemon --console=plain build
