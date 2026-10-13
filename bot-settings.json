@@ -1,6 +1,6 @@
 {
   "server": {
-    "address": "stablelifesteal611.mcsh.io",
+    "address": "stablelifesteal.mcsh.io",
     "port": 25565,
     "minecraft_version": "1.21.11"
   },
