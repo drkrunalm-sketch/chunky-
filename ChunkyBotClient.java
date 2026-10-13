@@ -1,3 +1,4 @@
+
 package com.shaurya.chunkybot;
 
 import com.google.gson.Gson;
@@ -6,19 +7,21 @@ import com.google.gson.GsonBuilder;
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents;
+import net.fabricmc.fabric.api.client.message.v1.ClientReceiveMessageEvents;
 
 import net.minecraft.block.BlockState;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.gui.screen.DeathScreen;
+import net.minecraft.client.gui.screen.ingame.HandledScreen;
 import net.minecraft.client.gui.screen.multiplayer.ConnectScreen;
 import net.minecraft.client.network.ServerAddress;
 import net.minecraft.client.network.ServerInfo;
 
 import net.minecraft.entity.Entity;
 import net.minecraft.entity.mob.HostileEntity;
-
 import net.minecraft.item.BlockItem;
 import net.minecraft.item.ItemStack;
+import net.minecraft.item.Items;
 
 import net.minecraft.util.Hand;
 import net.minecraft.util.hit.BlockHitResult;
@@ -46,6 +49,9 @@ public class ChunkyBotClient implements ClientModInitializer {
 
     private static final Random RANDOM = new Random();
 
+    // Diagnostic mode: inspect the lobby without wandering around it.
+    private static final boolean LOBBY_DIAGNOSTIC_MODE = true;
+
     private static BotSettings settings;
 
     private static long lastReconnectAttempt = 0;
@@ -54,6 +60,7 @@ public class ChunkyBotClient implements ClientModInitializer {
     private static long nextIdleChange = 0;
     private static long nextBlockPlace = 0;
     private static long lastMobScan = 0;
+    private static long compassAttemptAt = 0;
 
     private static int failedAttempts = 0;
 
@@ -64,69 +71,60 @@ public class ChunkyBotClient implements ClientModInitializer {
     private static boolean jumping = false;
     private static boolean idling = false;
 
+    private static boolean compassUseAttempted = false;
+    private static boolean lobbyMenuLogged = false;
+    private static Object lastInspectedScreen = null;
+
     private static float movementYaw = 0.0f;
-
     private static HostileEntity nearestHostile = null;
-
     private static Thread healthThread;
-
-    // ============================================================
-    // INITIALIZATION
-    // ============================================================
 
     @Override
     public void onInitializeClient() {
-
         loadSettings();
-
         startRenderHealthServer();
 
         ClientTickEvents.END_CLIENT_TICK.register(mc -> tick());
 
-        // Connection logging, so the log shows why/when the bot drops.
         ClientPlayConnectionEvents.JOIN.register((handler, sender, mc) -> {
-            String dimension =
-                    mc.world != null
-                            ? mc.world.getRegistryKey().getValue().toString()
-                            : "?";
+            String dimension = mc.world != null
+                    ? mc.world.getRegistryKey().getValue().toString()
+                    : "?";
 
-            System.out.println(
-                    "[ChunkyBot] JOIN dimension=" + dimension
-            );
+            connectedAt = 0;
+            compassUseAttempted = false;
+            lobbyMenuLogged = false;
+            lastInspectedScreen = null;
+            compassAttemptAt = System.currentTimeMillis() + 3000;
+
+            System.out.println("[ChunkyBot] JOIN dimension=" + dimension);
+            System.out.println("[ChunkyBot] Connection established; inspecting lobby.");
         });
 
         ClientPlayConnectionEvents.DISCONNECT.register((handler, mc) -> {
-            long seconds =
-                    connectedAt == 0
-                            ? 0
-                            : (System.currentTimeMillis() - connectedAt) / 1000;
+            long seconds = connectedAt == 0
+                    ? 0
+                    : (System.currentTimeMillis() - connectedAt) / 1000;
 
-            System.out.println(
-                    "[ChunkyBot] DISCONNECTED after "
-                            + seconds
-                            + "s"
-            );
+            System.out.println("[ChunkyBot] DISCONNECTED after " + seconds + "s");
+
+            connectedAt = 0;
+            compassUseAttempted = false;
+            lobbyMenuLogged = false;
+            lastInspectedScreen = null;
+        });
+
+        // Record server chat/system messages, including lobby instructions.
+        ClientReceiveMessageEvents.GAME.register((message, overlay) -> {
+            System.out.println("[ChunkyBot] SERVER MESSAGE: "
+                    + message.getString());
         });
 
         System.out.println("[ChunkyBot] Client initialized.");
-
-        System.out.println(
-                "[ChunkyBot] Server: "
-                        + settings.server.address
-                        + ":"
-                        + settings.server.port
-        );
-
-        System.out.println(
-                "[ChunkyBot] Username: "
-                        + settings.account.username
-        );
-
-        /*
-         * No connect call here. The client isn't fully started yet
-         * (that caused the NullPointerException). The first tick()
-         * with no world triggers the connection instead.
-         */
+        System.out.println("[ChunkyBot] Server: "
+                + settings.server.address + ":" + settings.server.port);
+        System.out.println("[ChunkyBot] Username: "
+                + settings.account.username);
     }
 
     // ============================================================
@@ -134,27 +132,15 @@ public class ChunkyBotClient implements ClientModInitializer {
     // ============================================================
 
     private static void loadSettings() {
-
-        try {
-
-            InputStream input =
-                    ChunkyBotClient.class
-                            .getClassLoader()
-                            .getResourceAsStream("bot-settings.json");
+        try (InputStream input = ChunkyBotClient.class.getClassLoader()
+                .getResourceAsStream("bot-settings.json")) {
 
             if (input == null) {
-                throw new IOException(
-                        "bot-settings.json was not found."
-                );
+                throw new IOException("bot-settings.json was not found.");
             }
 
-            String json =
-                    new String(
-                            input.readAllBytes(),
-                            StandardCharsets.UTF_8
-                    );
-
-            input.close();
+            String json = new String(
+                    input.readAllBytes(), StandardCharsets.UTF_8);
 
             settings = GSON.fromJson(json, BotSettings.class);
 
@@ -163,56 +149,35 @@ public class ChunkyBotClient implements ClientModInitializer {
             }
 
             validateSettings();
-
             System.out.println("[ChunkyBot] Settings loaded.");
 
         } catch (Exception e) {
-
             System.err.println("[ChunkyBot] Failed to load settings:");
-
             e.printStackTrace();
-
             settings = new BotSettings();
         }
     }
 
     private static void validateSettings() {
-
-        if (settings.server == null) {
-            throw new IllegalArgumentException("Missing server settings.");
-        }
-
-        if (settings.account == null) {
-            throw new IllegalArgumentException("Missing account settings.");
-        }
-
-        if (settings.bot == null) {
-            throw new IllegalArgumentException("Missing bot settings.");
+        if (settings.server == null
+                || settings.account == null
+                || settings.bot == null) {
+            throw new IllegalArgumentException("Missing settings section.");
         }
 
         if (settings.server.address == null
                 || settings.server.address.isBlank()) {
-
             throw new IllegalArgumentException("server.address is empty.");
         }
 
-        if (settings.server.port < 1
-                || settings.server.port > 65535) {
-
+        if (settings.server.port < 1 || settings.server.port > 65535) {
             throw new IllegalArgumentException("Invalid server.port.");
         }
 
         if (settings.account.username == null
-                || settings.account.username.isBlank()) {
-
-            throw new IllegalArgumentException("account.username is empty.");
-        }
-
-        if (settings.account.username.length() > 16) {
-
-            throw new IllegalArgumentException(
-                    "Username is longer than 16 characters."
-            );
+                || settings.account.username.isBlank()
+                || settings.account.username.length() > 16) {
+            throw new IllegalArgumentException("Invalid account.username.");
         }
     }
 
@@ -221,110 +186,160 @@ public class ChunkyBotClient implements ClientModInitializer {
     // ============================================================
 
     private static void tick() {
-
         if (client == null) {
             return;
         }
 
-        /*
-         * Not currently inside a Minecraft world.
-         */
-        if (client.world == null
-                || client.player == null) {
-
+        if (client.world == null || client.player == null) {
             clearMovementKeys();
-
             connectedAt = 0;
-
             tryReconnect();
-
             return;
         }
 
-        /*
-         * Dead bots sit on the death screen forever. Respawn.
-         */
-        if (client.currentScreen instanceof DeathScreen) {
-
-            client.player.requestRespawn();
-
-            return;
-        }
-
-        /*
-         * First tick after joining.
-         */
         if (connectedAt == 0) {
-
             connectedAt = System.currentTimeMillis();
-
             failedAttempts = 0;
-
             System.out.println("[ChunkyBot] Joined the server.");
         }
 
-        /*
-         * Look straight upward to reduce rendering workload.
-         */
+        inspectLobby();
+
+        // Keep the bot stationary during this diagnostic run.
+        // Do not start wandering around the lobby.
+        if (LOBBY_DIAGNOSTIC_MODE) {
+            clearMovementKeys();
+            return;
+        }
+
+        if (client.currentScreen instanceof DeathScreen) {
+            client.player.requestRespawn();
+            return;
+        }
+
         client.player.setPitch(-90.0f);
 
-        /*
-         * Scan hostile mobs approximately twice per second.
-         */
         if (System.currentTimeMillis() - lastMobScan >= 500) {
-
             lastMobScan = System.currentTimeMillis();
-
             scanForHostiles();
         }
 
-        /*
-         * Hostile mob avoidance takes priority.
-         */
         if (settings.bot.mob_avoidance.enabled
-                && nearestHostile != null) {
-
-            double distance =
-                    distanceTo(entityPosition(nearestHostile));
-
-            if (distance <= settings.bot.mob_avoidance.flee_radius) {
-
-                fleeFromHostile();
-
-                return;
-            }
+                && nearestHostile != null
+                && distanceTo(entityPosition(nearestHostile))
+                <= settings.bot.mob_avoidance.flee_radius) {
+            fleeFromHostile();
+            return;
         }
 
-        /*
-         * Normal movement.
-         */
         if (settings.bot.movement.enabled) {
-
             updateMovement();
-
         } else {
-
             clearMovementKeys();
         }
 
-        /*
-         * Optional block placement.
-         */
         if (settings.bot.block_placing.enabled) {
-
             handleBlockPlacement();
         }
     }
 
     // ============================================================
-    // CONNECTION
+    // LOBBY INSPECTION
+    // ============================================================
+
+    private static void inspectLobby() {
+        if (client.player == null || client.world == null) {
+            return;
+        }
+
+        // Print the names of all items in an opened inventory/menu.
+        if (client.currentScreen instanceof HandledScreen<?> screen
+                && lastInspectedScreen != client.currentScreen) {
+
+            lastInspectedScreen = client.currentScreen;
+            lobbyMenuLogged = true;
+
+            System.out.println("[ChunkyBot] ===== LOBBY MENU OPENED =====");
+            System.out.println("[ChunkyBot] Menu title: "
+                    + screen.getTitle().getString());
+
+            var handler = screen.getScreenHandler();
+
+            for (int i = 0; i < handler.slots.size(); i++) {
+                ItemStack stack = handler.slots.get(i).getStack();
+
+                if (!stack.isEmpty()) {
+                    System.out.println("[ChunkyBot] MENU SLOT "
+                            + i + ": "
+                            + stack.getName().getString()
+                            + " x" + stack.getCount());
+                }
+            }
+
+            System.out.println("[ChunkyBot] ===== END MENU =====");
+        }
+
+        // Try the compass once, after the lobby has loaded.
+        if (!compassUseAttempted
+                && System.currentTimeMillis() >= compassAttemptAt
+                && client.currentScreen == null) {
+
+            compassUseAttempted = true;
+
+            int compassSlot = -1;
+
+            for (int i = 0; i < 9; i++) {
+                ItemStack stack =
+                        client.player.getInventory().getStack(i);
+
+                if (stack.isOf(Items.COMPASS)) {
+                    compassSlot = i;
+                    break;
+                }
+            }
+
+            if (compassSlot >= 0) {
+                client.player.getInventory().setSelectedSlot(compassSlot);
+
+                System.out.println("[ChunkyBot] Found lobby compass in hotbar slot "
+                        + compassSlot + "; attempting to use it.");
+
+                if (client.interactionManager != null) {
+                    client.interactionManager.interactItem(
+                            client.player, Hand.MAIN_HAND);
+                }
+            } else {
+                System.out.println("[ChunkyBot] No compass found in hotbar.");
+
+                for (int i = 0; i < 9; i++) {
+                    ItemStack stack =
+                            client.player.getInventory().getStack(i);
+
+                    if (!stack.isEmpty()) {
+                        System.out.println("[ChunkyBot] HOTBAR SLOT "
+                                + i + ": "
+                                + stack.getName().getString());
+                    }
+                }
+
+                System.out.println(
+                        "[ChunkyBot] Need lobby menu/item information before selecting a server.");
+            }
+        }
+
+        if (client.currentScreen != null
+                && !(client.currentScreen instanceof HandledScreen<?>)) {
+            System.out.println("[ChunkyBot] Current screen: "
+                    + client.currentScreen.getClass().getSimpleName());
+        }
+    }
+
+    // ============================================================
+    // CONNECTION AND RECONNECT
     // ============================================================
 
     private static void connectToServer() {
-
-        if (settings == null
-                || settings.server == null) {
-
+        if (settings == null || settings.server == null) {
             return;
         }
 
@@ -337,91 +352,53 @@ public class ChunkyBotClient implements ClientModInitializer {
         lastReconnectAttempt = now;
 
         String addressText =
-                settings.server.address
-                        + ":"
-                        + settings.server.port;
+                settings.server.address + ":" + settings.server.port;
 
-        System.out.println(
-                "[ChunkyBot] Connecting to " + addressText
-        );
+        System.out.println("[ChunkyBot] Connecting to " + addressText);
 
         try {
+            ServerAddress address = ServerAddress.parse(addressText);
 
-            ServerAddress address =
-                    ServerAddress.parse(addressText);
-
-            ServerInfo serverInfo =
-                    new ServerInfo(
-                            "Chunky Bot Server",
-                            addressText,
-                            ServerInfo.ServerType.OTHER
-                    );
+            ServerInfo serverInfo = new ServerInfo(
+                    "Chunky Bot Server",
+                    addressText,
+                    ServerInfo.ServerType.OTHER);
 
             ConnectScreen.connect(
-                    null,
-                    client,
-                    address,
-                    serverInfo,
-                    false,
-                    null
-            );
+                    null, client, address, serverInfo, false, null);
 
         } catch (Exception e) {
-
             System.err.println("[ChunkyBot] Connection failed:");
-
             e.printStackTrace();
         }
     }
 
     private static void tryReconnect() {
-
-        if (!settings.bot.auto_reconnect) {
-            return;
-        }
-
-        if (client.world != null) {
-            return;
-        }
-
-        /*
-         * Don't start a new connection while Minecraft is
-         * already showing a connection screen.
-         */
-        if (client.currentScreen instanceof ConnectScreen) {
+        if (!settings.bot.auto_reconnect
+                || client.world != null
+                || client.currentScreen instanceof ConnectScreen) {
             return;
         }
 
         long now = System.currentTimeMillis();
 
-        /*
-         * Backoff: base delay, then 2x, 4x, 8x, capped at 60s.
-         * The first attempt (lastReconnectAttempt == 0) is immediate.
-         */
         long baseDelay =
                 Math.max(1, settings.bot.reconnect_delay_seconds) * 1000L;
 
-        long delay =
-                Math.min(
-                        60_000L,
-                        baseDelay * (1L << Math.min(failedAttempts, 3))
-                );
+        long delay = Math.min(
+                60_000L,
+                baseDelay * (1L << Math.min(failedAttempts, 3)));
 
         if (lastReconnectAttempt != 0
                 && now - lastReconnectAttempt < delay) {
-
             return;
         }
 
         failedAttempts++;
 
-        System.out.println(
-                "[ChunkyBot] Attempting connect/reconnect (attempt "
-                        + failedAttempts
-                        + ", next wait "
-                        + (delay / 1000)
-                        + "s if it fails)..."
-        );
+        System.out.println("[ChunkyBot] Attempting connect/reconnect (attempt "
+                + failedAttempts + ", next wait " + (delay / 1000)
+                + "s if it fails)...");
 
         connectToServer();
     }
@@ -431,38 +408,25 @@ public class ChunkyBotClient implements ClientModInitializer {
     // ============================================================
 
     private static void updateMovement() {
-
         long now = System.currentTimeMillis();
 
         if (idling) {
-
             clearMovementKeys();
 
             if (now >= nextIdleChange) {
-
                 idling = false;
-
                 nextMovementChange = now + randomMovementDuration();
             }
-
             return;
         }
 
         if (now >= nextMovementChange) {
-
             chooseNewMovement();
 
-            /*
-             * 15% chance to idle.
-             */
             if (RANDOM.nextInt(100) < 15) {
-
                 idling = true;
-
                 nextIdleChange = now + randomIdleDuration();
-
                 clearMovementKeys();
-
                 return;
             }
         }
@@ -479,39 +443,27 @@ public class ChunkyBotClient implements ClientModInitializer {
     }
 
     private static void chooseNewMovement() {
-
         long now = System.currentTimeMillis();
 
         movementYaw = RANDOM.nextFloat() * 360.0f;
-
-        strafing =
-                settings.bot.movement.random_strafe
-                        && RANDOM.nextBoolean();
-
-        // Picked once per movement, so strafing is steady, not jittery.
+        strafing = settings.bot.movement.random_strafe
+                && RANDOM.nextBoolean();
         strafeLeft = RANDOM.nextBoolean();
-
-        sprinting =
-                settings.bot.movement.sprint
-                        && RANDOM.nextInt(100) < 70;
+        sprinting = settings.bot.movement.sprint
+                && RANDOM.nextInt(100) < 70;
 
         moving = true;
-
         jumping = false;
-
         nextMovementChange = now + randomMovementDuration();
 
         if (client.player != null) {
             client.player.setYaw(movementYaw);
         }
 
-        System.out.println(
-                "[ChunkyBot] New direction: " + movementYaw
-        );
+        System.out.println("[ChunkyBot] New direction: " + movementYaw);
     }
 
     private static void applyMovement() {
-
         if (client.player == null) {
             return;
         }
@@ -528,7 +480,6 @@ public class ChunkyBotClient implements ClientModInitializer {
         client.options.forwardKey.setPressed(true);
 
         if (strafing) {
-
             if (strafeLeft) {
                 client.options.leftKey.setPressed(true);
             } else {
@@ -537,12 +488,10 @@ public class ChunkyBotClient implements ClientModInitializer {
         }
 
         client.options.sprintKey.setPressed(
-                settings.bot.movement.sprint && sprinting
-        );
+                settings.bot.movement.sprint && sprinting);
     }
 
     private static void randomLook() {
-
         if (client.player == null) {
             return;
         }
@@ -550,34 +499,21 @@ public class ChunkyBotClient implements ClientModInitializer {
         client.player.setPitch(-90.0f);
 
         if (RANDOM.nextInt(100) < 8) {
-
-            float yaw = client.player.getYaw();
-
             float change = RANDOM.nextFloat() * 80.0f - 40.0f;
-
-            client.player.setYaw(yaw + change);
+            client.player.setYaw(client.player.getYaw() + change);
         }
     }
 
     private static void tryJump() {
-
         if (client.player == null) {
             return;
         }
 
-        if (client.player.isOnGround()
-                && RANDOM.nextInt(100) < 3) {
+        boolean jump = client.player.isOnGround()
+                && RANDOM.nextInt(100) < 3;
 
-            client.options.jumpKey.setPressed(true);
-
-            jumping = true;
-
-        } else {
-
-            client.options.jumpKey.setPressed(false);
-
-            jumping = false;
-        }
+        client.options.jumpKey.setPressed(jump);
+        jumping = jump;
     }
 
     // ============================================================
@@ -585,12 +521,8 @@ public class ChunkyBotClient implements ClientModInitializer {
     // ============================================================
 
     private static void scanForHostiles() {
-
-        if (client.world == null
-                || client.player == null) {
-
+        if (client.world == null || client.player == null) {
             nearestHostile = null;
-
             return;
         }
 
@@ -600,21 +532,16 @@ public class ChunkyBotClient implements ClientModInitializer {
                 client.world.getEntitiesByClass(
                         HostileEntity.class,
                         client.player.getBoundingBox().expand(radius),
-                        entity -> entity.isAlive()
-                );
+                        Entity::isAlive);
 
         HostileEntity closest = null;
-
         double closestDistance = Double.MAX_VALUE;
 
         for (HostileEntity entity : entities) {
-
             double distance = distanceTo(entityPosition(entity));
 
             if (distance < closestDistance) {
-
                 closestDistance = distance;
-
                 closest = entity;
             }
         }
@@ -623,25 +550,18 @@ public class ChunkyBotClient implements ClientModInitializer {
     }
 
     private static void fleeFromHostile() {
-
-        if (client.player == null
-                || nearestHostile == null) {
-
+        if (client.player == null || nearestHostile == null) {
             return;
         }
 
         Vec3d playerPos = playerPosition();
-
         Vec3d hostilePos = entityPosition(nearestHostile);
 
         double dx = playerPos.x - hostilePos.x;
-
         double dz = playerPos.z - hostilePos.z;
-
         double length = Math.sqrt(dx * dx + dz * dz);
 
         if (length < 0.001) {
-
             dx = 1.0;
             dz = 0.0;
             length = 1.0;
@@ -654,9 +574,7 @@ public class ChunkyBotClient implements ClientModInitializer {
                 (float) Math.toDegrees(Math.atan2(-dx, dz));
 
         client.player.setYaw(escapeYaw);
-
         client.options.forwardKey.setPressed(true);
-
         client.options.sprintKey.setPressed(true);
 
         if (client.player.isOnGround()) {
@@ -672,21 +590,16 @@ public class ChunkyBotClient implements ClientModInitializer {
     // ============================================================
 
     private static void handleBlockPlacement() {
-
         if (client.player == null
                 || client.world == null
                 || client.interactionManager == null) {
-
             return;
         }
 
         long now = System.currentTimeMillis();
 
-        long interval =
-                Math.max(
-                        1,
-                        settings.bot.block_placing.interval_seconds
-                ) * 1000L;
+        long interval = Math.max(
+                1, settings.bot.block_placing.interval_seconds) * 1000L;
 
         if (now < nextBlockPlace) {
             return;
@@ -694,29 +607,21 @@ public class ChunkyBotClient implements ClientModInitializer {
 
         nextBlockPlace = now + interval;
 
-        int slot =
-                Math.max(
-                        0,
-                        Math.min(
-                                8,
-                                settings.bot.block_placing.hotbar_slot
-                        )
-                );
+        int slot = Math.max(
+                0,
+                Math.min(8, settings.bot.block_placing.hotbar_slot));
 
         ItemStack stack =
                 client.player.getInventory().getStack(slot);
 
-        if (settings.bot.block_placing.only_if_block_in_slot) {
-
-            if (!(stack.getItem() instanceof BlockItem)) {
-                return;
-            }
+        if (settings.bot.block_placing.only_if_block_in_slot
+                && !(stack.getItem() instanceof BlockItem)) {
+            return;
         }
 
         client.player.getInventory().setSelectedSlot(slot);
 
         BlockPos below = client.player.getBlockPos().down();
-
         BlockState belowState = client.world.getBlockState(below);
 
         if (belowState.isAir()) {
@@ -724,66 +629,43 @@ public class ChunkyBotClient implements ClientModInitializer {
         }
 
         Vec3d playerPos = playerPosition();
-
-        float yaw = client.player.getYaw();
-
-        double radians = Math.toRadians(yaw);
+        double radians = Math.toRadians(client.player.getYaw());
 
         double forwardX = -Math.sin(radians);
-
         double forwardZ = Math.cos(radians);
 
         int placeAhead =
-                Math.max(
-                        1,
-                        settings.bot.block_placing.place_ahead
-                );
+                Math.max(1, settings.bot.block_placing.place_ahead);
 
-        BlockPos target =
-                BlockPos.ofFloored(
-                        playerPos.x + forwardX * placeAhead,
-                        playerPos.y,
-                        playerPos.z + forwardZ * placeAhead
-                );
+        BlockPos target = BlockPos.ofFloored(
+                playerPos.x + forwardX * placeAhead,
+                playerPos.y,
+                playerPos.z + forwardZ * placeAhead);
 
-        BlockState targetState = client.world.getBlockState(target);
-
-        if (!targetState.isAir()) {
+        if (!client.world.getBlockState(target).isAir()) {
             return;
         }
 
         BlockPos support = target.down();
 
-        BlockState supportState = client.world.getBlockState(support);
-
-        if (supportState.isAir()) {
+        if (client.world.getBlockState(support).isAir()) {
             return;
         }
 
-        BlockHitResult hitResult =
-                new BlockHitResult(
-                        new Vec3d(
-                                target.getX() + 0.5,
-                                target.getY(),
-                                target.getZ() + 0.5
-                        ),
-                        Direction.UP,
-                        support,
-                        false
-                );
+        BlockHitResult hitResult = new BlockHitResult(
+                new Vec3d(
+                        target.getX() + 0.5,
+                        target.getY(),
+                        target.getZ() + 0.5),
+                Direction.UP,
+                support,
+                false);
 
         try {
-
             client.interactionManager.interactBlock(
-                    client.player,
-                    Hand.MAIN_HAND,
-                    hitResult
-            );
-
+                    client.player, Hand.MAIN_HAND, hitResult);
         } catch (Exception e) {
-
             System.err.println("[ChunkyBot] Block placement failed:");
-
             e.printStackTrace();
         }
     }
@@ -793,7 +675,6 @@ public class ChunkyBotClient implements ClientModInitializer {
     // ============================================================
 
     private static Vec3d playerPosition() {
-
         if (client.player == null) {
             return Vec3d.ZERO;
         }
@@ -801,27 +682,21 @@ public class ChunkyBotClient implements ClientModInitializer {
         return new Vec3d(
                 client.player.getX(),
                 client.player.getY(),
-                client.player.getZ()
-        );
+                client.player.getZ());
     }
 
     private static Vec3d entityPosition(Entity entity) {
-
         return new Vec3d(
                 entity.getX(),
                 entity.getY(),
-                entity.getZ()
-        );
+                entity.getZ());
     }
 
     private static double distanceTo(Vec3d position) {
-
         Vec3d player = playerPosition();
 
         double dx = player.x - position.x;
-
         double dy = player.y - position.y;
-
         double dz = player.z - position.z;
 
         return Math.sqrt(dx * dx + dy * dy + dz * dz);
@@ -832,7 +707,6 @@ public class ChunkyBotClient implements ClientModInitializer {
     // ============================================================
 
     private static void clearMovementKeys() {
-
         if (client == null || client.options == null) {
             return;
         }
@@ -855,145 +729,96 @@ public class ChunkyBotClient implements ClientModInitializer {
     // ============================================================
 
     private static long randomMovementDuration() {
+        int min = Math.max(
+                1, settings.bot.movement.patrol_min_seconds);
 
-        int min =
-                Math.max(1, settings.bot.movement.patrol_min_seconds);
+        int max = Math.max(
+                min, settings.bot.movement.patrol_max_seconds);
 
-        int max =
-                Math.max(min, settings.bot.movement.patrol_max_seconds);
-
-        int seconds = min + RANDOM.nextInt(max - min + 1);
-
-        return seconds * 1000L;
+        return (min + RANDOM.nextInt(max - min + 1)) * 1000L;
     }
 
     private static long randomIdleDuration() {
+        int min = Math.max(
+                1, settings.bot.movement.idle_min_seconds);
 
-        int min =
-                Math.max(1, settings.bot.movement.idle_min_seconds);
+        int max = Math.max(
+                min, settings.bot.movement.idle_max_seconds);
 
-        int max =
-                Math.max(min, settings.bot.movement.idle_max_seconds);
-
-        int seconds = min + RANDOM.nextInt(max - min + 1);
-
-        return seconds * 1000L;
+        return (min + RANDOM.nextInt(max - min + 1)) * 1000L;
     }
 
     // ============================================================
-    // HEALTH SERVER (leftover from Render; harmless elsewhere)
+    // HEALTH SERVER
     // ============================================================
 
     private static void startRenderHealthServer() {
-
-        if (healthThread != null
-                && healthThread.isAlive()) {
-
+        if (healthThread != null && healthThread.isAlive()) {
             return;
         }
 
-        healthThread =
-                new Thread(
-                        () -> {
+        healthThread = new Thread(() -> {
+            String portString = System.getenv("PORT");
+            int port = 10000;
 
-                            String portString = System.getenv("PORT");
+            if (portString != null) {
+                try {
+                    port = Integer.parseInt(portString);
+                } catch (NumberFormatException ignored) {
+                    System.out.println(
+                            "[ChunkyBot] Invalid PORT; using 10000.");
+                }
+            }
 
-                            int port = 10000;
+            try (ServerSocket serverSocket = new ServerSocket()) {
+                serverSocket.setReuseAddress(true);
+                serverSocket.bind(
+                        new InetSocketAddress("0.0.0.0", port));
 
-                            if (portString != null) {
+                System.out.println(
+                        "[ChunkyBot] Health server listening on " + port);
 
-                                try {
-
-                                    port = Integer.parseInt(portString);
-
-                                } catch (NumberFormatException ignored) {
-
-                                    System.out.println(
-                                            "[ChunkyBot] Invalid PORT; using 10000."
-                                    );
-                                }
-                            }
-
-                            try (ServerSocket serverSocket = new ServerSocket()) {
-
-                                serverSocket.setReuseAddress(true);
-
-                                serverSocket.bind(
-                                        new InetSocketAddress("0.0.0.0", port)
-                                );
-
-                                System.out.println(
-                                        "[ChunkyBot] Health server listening on "
-                                                + port
-                                );
-
-                                while (true) {
-
-                                    try (Socket socket = serverSocket.accept()) {
-
-                                        handleHealthRequest(socket);
-
-                                    } catch (Exception e) {
-
-                                        System.err.println(
-                                                "[ChunkyBot] Health request error:"
-                                        );
-
-                                        e.printStackTrace();
-                                    }
-                                }
-
-                            } catch (Exception e) {
-
-                                System.err.println(
-                                        "[ChunkyBot] Failed to start health server:"
-                                );
-
-                                e.printStackTrace();
-                            }
-
-                        },
-                        "Render-Health-Server"
-                );
+                while (true) {
+                    try (Socket socket = serverSocket.accept()) {
+                        handleHealthRequest(socket);
+                    } catch (Exception e) {
+                        System.err.println(
+                                "[ChunkyBot] Health request error:");
+                        e.printStackTrace();
+                    }
+                }
+            } catch (Exception e) {
+                System.err.println(
+                        "[ChunkyBot] Failed to start health server:");
+                e.printStackTrace();
+            }
+        }, "Render-Health-Server");
 
         healthThread.setDaemon(true);
-
         healthThread.start();
     }
 
     private static void handleHealthRequest(Socket socket) {
-
         try {
-
             socket.setSoTimeout(2000);
 
             InputStream input = socket.getInputStream();
-
             byte[] buffer = new byte[1024];
-
             input.read(buffer);
 
-            String body = "ChunkyBot is running\n";
-
-            byte[] bodyBytes = body.getBytes(StandardCharsets.UTF_8);
+            byte[] bodyBytes =
+                    "ChunkyBot is running\n".getBytes(StandardCharsets.UTF_8);
 
             OutputStream output = socket.getOutputStream();
 
-            String response =
-                    "HTTP/1.1 200 OK\r\n"
-                            + "Content-Type: text/plain\r\n"
-                            + "Content-Length: "
-                            + bodyBytes.length
-                            + "\r\n"
-                            + "Connection: close\r\n"
-                            + "\r\n";
+            String response = "HTTP/1.1 200 OK\r\n"
+                    + "Content-Type: text/plain\r\n"
+                    + "Content-Length: " + bodyBytes.length + "\r\n"
+                    + "Connection: close\r\n\r\n";
 
             output.write(response.getBytes(StandardCharsets.UTF_8));
-
             output.write(bodyBytes);
-
             output.flush();
-
         } catch (Exception ignored) {
         }
     }
@@ -1003,87 +828,55 @@ public class ChunkyBotClient implements ClientModInitializer {
     // ============================================================
 
     public static class BotSettings {
-
         public Server server = new Server();
-
         public Account account = new Account();
-
         public Bot bot = new Bot();
     }
 
     public static class Server {
-
         public String address = "localhost";
-
         public int port = 25565;
-
         public String minecraft_version = "1.21.11";
     }
 
     public static class Account {
-
         public String username = "ChunkyBot";
     }
 
     public static class Bot {
-
         public boolean auto_reconnect = true;
-
         public int reconnect_delay_seconds = 10;
-
         public int connect_delay_seconds = 3;
-
         public Movement movement = new Movement();
-
         public MobAvoidance mob_avoidance = new MobAvoidance();
-
         public BlockPlacing block_placing = new BlockPlacing();
     }
 
     public static class Movement {
-
         public boolean enabled = true;
-
         public double patrol_radius = 20.0;
-
         public boolean sprint = true;
-
         public boolean jump_over_obstacles = true;
-
         public boolean random_strafe = true;
-
         public boolean random_look = true;
-
-        public int patrol_min_seconds = 6;
-
-        public int patrol_max_seconds = 10;
-
+        public int patrol_min_seconds = 4;
+        public int patrol_max_seconds = 9;
         public int idle_min_seconds = 2;
-
         public int idle_max_seconds = 5;
     }
 
     public static class MobAvoidance {
-
         public boolean enabled = true;
-
         public double detection_radius = 16.0;
-
         public double flee_radius = 11.0;
-
         public double emergency_radius = 6.0;
     }
 
     public static class BlockPlacing {
-
-        public boolean enabled = false;
-
-        public int hotbar_slot = 0;
-
-        public int interval_seconds = 10;
-
+        public boolean enabled = true;
+        public int hotbar_slot = 1;
+        public int interval_seconds = 12;
         public int place_ahead = 1;
-
         public boolean only_if_block_in_slot = true;
     }
 }
