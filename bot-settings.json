@@ -1,7 +1,7 @@
 {
   "server": {
-    "address": "ItsAnonymous126-cJnf.aternos.me",
-    "port": 58161,
+    "address": "stablelifesteal611.mcsh.io",
+    "port": 25565,
     "minecraft_version": "1.21.11"
   },
   "account": {
